@@ -160,66 +160,63 @@ Effects are just one instance of a more general framework called **graded modal 
 | Property | Algebra | Elements | "Zero" | Composition |
 |----------|---------|----------|--------|-------------|
 | **Effects** | Set semiring | `{Stdout, Http, ...}` | `{}` (pure) | Union |
-| **Linearity** | Natural numbers | `0, 1, 2, ...` | `0` (unused) | Addition |
 | **Privacy** | Lattice | `Public, Internal, Confidential, Secret` | `Public` | Join (max) |
-| **Capabilities** | Set semiring | `{Read, Write, Admin}` | `{}` (no perms) | Union |
 
-The checker algorithm is the same shape for all of these:
+The checker algorithm is the same shape for both:
 
 1. Walk the syntax tree
-2. Collect the "grade" (effect set, usage count, privacy level, capability set) for each operation
+2. Collect the "grade" (effect set or privacy level) for each operation
 3. Combine grades using the algebra's composition operation
 4. Check that the result satisfies the declared constraint
 
-This is what makes the theory powerful — you design the checker once, parameterized by the algebra, and get effect checking, linearity checking, privacy checking, and capability checking from the same infrastructure.
+This is what makes the theory powerful — the checker is parameterized by the algebra. The same infrastructure that walks the AST and follows transitive calls works for both effects and privacy.
 
-### Linearity example (future)
+## Step 7: Privacy — the next checker
 
-```
-// Each database connection must be used exactly once
-effects open_db : [Db]
-linearity open_db : 1
+Effects answer "what *kind* of side effect does this function perform?" Privacy answers "where does sensitive data *flow*?"
 
-pub fn handler(request: Request) -> Response {
-  let conn = open_db()
-  let result = query(conn, "SELECT ...")  // uses conn: count = 1 ✓
-  // conn is not used again — good
-  respond(result)
+Consider a web app that handles user data:
+
+```gleam
+pub fn render_profile(user: User) -> Element(Msg) {
+  html.div([], [
+    html.h1([], [html.text(user.name)]),
+    html.p([], [html.text(user.email)]),  // PII!
+  ])
+}
+
+pub fn log_request(user: User, path: String) -> Nil {
+  io.println("Request: " <> path <> " by " <> user.email)  // PII in logs!
 }
 ```
 
-If someone accidentally uses `conn` twice:
+The second function leaks PII into stdout — a real compliance problem (GDPR, HIPAA). The type system can't catch this because `user.email` is just a `String`.
 
-```gleam
-let result1 = query(conn, "SELECT ...")   // count = 1
-let result2 = query(conn, "SELECT ...")   // count = 2, but declared 1 → VIOLATION
-```
-
-The algebra here is natural numbers: zero means unused, one means use exactly once, addition combines usages.
-
-### Privacy example (future)
-
-```
-// user.email is Confidential, must not flow to Public outputs
-privacy user_email : Confidential
-privacy render_public_page : Public
-```
-
-The privacy levels form a *lattice*:
+Privacy checking assigns sensitivity levels that form a *lattice*:
 
 ```
 Secret > Confidential > Internal > Public
 ```
 
-The rule: information at level L can only flow to contexts at level ≥ L. If `render_public_page` (Public) accesses `user.email` (Confidential):
+The rule: data at level L must not flow to a context at level < L.
+
+```
+// priv/assay/app.assay
+privacy user.email : Confidential
+privacy io.println : Public
+```
+
+If `log_request` passes `user.email` (Confidential) to `io.println` (Public):
 
 ```
 Confidential ≤ Public  →  false  →  VIOLATION
 ```
 
+Unlike effect checking (which walks the call graph), privacy checking requires **data flow analysis** — tracking which variables carry sensitive data and where those values end up. This is a meaningful step up in complexity but uses the same algebra-parametric framework.
+
 ## What assay implements today
 
-Assay v0.1.0 implements the **effect checking** column:
+Assay v0.1.0 implements **effect checking**:
 
 - Effects are sets of string labels
 - Composition is set union
@@ -227,7 +224,17 @@ Assay v0.1.0 implements the **effect checking** column:
 - Transitive analysis follows local calls
 - Knowledge base maps external functions to their effect sets
 
-The annotation language is designed to extend to other algebras in the future — the `[...]` syntax works for sets (effects, capabilities) and could be extended with different bracket styles or keywords for naturals (linearity) and lattices (privacy).
+Privacy checking is the planned next step — it introduces a new algebra (lattices) and a new analysis mode (data flow) while reusing the existing AST infrastructure.
+
+## A note on other graded properties
+
+The theory supports additional graded properties like **linearity** (tracking how many times a value is used, via natural number semirings) and **capabilities** (tracking permissions, via set semirings). These are well-studied in the literature and the framework can accommodate them.
+
+In practice, for Gleam specifically:
+- **Linearity** provides limited value because Gleam is already immutable with no shared state — the language design prevents the bugs linearity would catch.
+- **Capabilities** as a set-based check are structurally identical to effects — you can already use effect labels like `[Admin, Write]` for this purpose today.
+
+The focus is on effects and privacy as the two checkers with clear, distinct value for Gleam programs.
 
 ## Further reading
 

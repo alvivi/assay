@@ -80,14 +80,14 @@ This is v0.1.0 — the effect checker. It handles:
 
 ## Future direction
 
-The long-term vision is a general graded modal type checker for Gleam, covering:
+The next major feature is **privacy and information flow checking** — lattice-based tracking that prevents sensitive data (PII, credentials) from flowing into logs, error messages, or third-party services. This is the class of bug that's hardest to prevent manually as a codebase grows.
 
-- **Linearity and resource tracking** — verify resources are used exactly once
-- **Privacy and information flow** — lattice-based tracking of data sensitivity
-- **Capability permissions** — ensure functions only use authorized capabilities
+Both checkers share the same theoretical foundation: graded modal type theory (see [THEORY.md](./THEORY.md)). Effects use sets with union; privacy uses lattices with join. The checker infrastructure is designed to be algebra-parametric, so the same AST walking and transitive analysis supports both.
+
+Planned:
+
+- **Privacy / information flow** — track data sensitivity levels across module boundaries
 - **LLM agent integration** — auto-generation and verification of annotations in CI
-
-The theory is graded modal type theory as developed in [Granule](https://granule-project.github.io/) (Orchard et al., ICFP 2019) and the coeffect literature. The same annotation shape works across all these domains — effects use sets, linearity uses naturals, privacy uses lattices.
 
 ## License
 

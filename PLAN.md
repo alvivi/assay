@@ -113,8 +113,7 @@ Six modules, no circular dependencies:
 ## What's Deferred
 
 - Effect polymorphism (effect variables in annotations)
-- Auto-generation of .assay skeletons
 - Package-interface integration for cross-package types
-- Linearity checking
-- LLM integration
+- Privacy / information flow checking (lattice algebra, data flow analysis)
+- LLM agent integration
 - Incremental checking / caching
