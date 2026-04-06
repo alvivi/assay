@@ -126,7 +126,7 @@ pub fn infer_pure_function_test() {
     "import gleam/list
 pub fn view(items) { list.map(items, fn(x) { x }) }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base())
+  let inferred = checker.infer(module, knowledge_base(), [])
   let assert [annotation] = inferred
   annotation.kind |> should.equal(Effects)
   annotation.function |> should.equal("view")
@@ -138,7 +138,7 @@ pub fn infer_effectful_function_test() {
     "import gleam/io
 pub fn greet() { io.println(\"hi\") }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base())
+  let inferred = checker.infer(module, knowledge_base(), [])
   let assert [annotation] = inferred
   annotation.effects |> should.equal(set.from_list(["Stdout"]))
 }
@@ -149,9 +149,30 @@ pub fn infer_only_public_functions_test() {
 pub fn view() { helper() }
 fn helper() { io.println(\"x\") }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base())
+  let inferred = checker.infer(module, knowledge_base(), [])
   let assert [annotation] = inferred
   annotation.function |> should.equal("view")
+}
+
+// Infer respects existing param bounds
+
+pub fn infer_uses_param_bounds_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  let assert Ok(module) = glance.module(source)
+  let existing_checks = [
+    EffectAnnotation(Check, "apply", [ParamBound("f", set.from_list(["Stdout"]))], set.from_list(["Stdout"])),
+  ]
+  let inferred = checker.infer(module, knowledge_base(), existing_checks)
+  let assert [annotation] = inferred
+  annotation.effects |> should.equal(set.from_list(["Stdout"]))
+}
+
+pub fn infer_without_bounds_gets_unknown_test() {
+  let source = "pub fn apply(f, x) { f(x) }"
+  let assert Ok(module) = glance.module(source)
+  let inferred = checker.infer(module, knowledge_base(), [])
+  let assert [annotation] = inferred
+  annotation.effects |> should.equal(set.from_list(["Unknown"]))
 }
 
 // Higher-order / parameter bound tests

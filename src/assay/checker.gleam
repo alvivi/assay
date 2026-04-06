@@ -8,6 +8,7 @@ import glance.{type Definition, type Function, type Module}
 import gleam/option.{Some}
 import gleam/dict
 import gleam/list
+import gleam/result
 import gleam/set.{type Set}
 
 /// Check a parsed module against its effect annotations.
@@ -25,18 +26,29 @@ pub fn check(
 }
 
 /// Infer the effect set for every public function in a module.
+/// Pass existing `check` annotations so their param bounds are used during inference.
 pub fn infer(
   module: Module,
   knowledge_base: KnowledgeBase,
+  existing_checks: List(EffectAnnotation),
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
+
+  let bounds_map =
+    existing_checks
+    |> list.filter(fn(a) { a.params != [] })
+    |> list.map(fn(a) { #(a.function, a.params) })
+    |> dict.from_list()
 
   module.functions
   |> list.filter(fn(definition) {
     definition.definition.publicity == glance.Public
   })
   |> list.map(fn(definition) {
+    let param_bounds =
+      dict.get(bounds_map, definition.definition.name)
+      |> result.unwrap([])
     let all_effects =
       collect_effects(
         definition.definition,
@@ -44,7 +56,7 @@ pub fn infer(
         context,
         knowledge_base,
         set.new(),
-        [],
+        param_bounds,
       )
     let effect_set =
       list.fold(all_effects, set.new(), fn(combined, pair) {

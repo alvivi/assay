@@ -98,7 +98,19 @@ pub fn run_infer(directory: String) -> Result(Nil, AssayError) {
     let assay_path = gleam_to_assay_path(gleam_path, directory)
     use module <- result.try(read_and_parse_gleam(gleam_path))
 
-    let inferred = checker.infer(module, knowledge_base)
+    let existing_file =
+      simplifile.read(assay_path)
+      |> result.map_error(fn(_) { Nil })
+      |> result.try(fn(content) {
+        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
+      })
+
+    let #(kb, existing_checks) = case existing_file {
+      Ok(file) -> enrich_kb(file, knowledge_base)
+      Error(Nil) -> #(knowledge_base, [])
+    }
+
+    let inferred = checker.infer(module, kb, existing_checks)
 
     let parent_directory = filepath.directory_name(assay_path)
     use Nil <- result.try(
@@ -106,18 +118,13 @@ pub fn run_infer(directory: String) -> Result(Nil, AssayError) {
       |> result.map_error(DirectoryCreateError(parent_directory, _)),
     )
 
-    case inferred, simplifile.read(assay_path) {
-      [], Error(_no_file) -> Ok(Nil)
-      _, Ok(existing_content) -> {
-        let assay_file = case annotation.parse_file(existing_content) {
-          Ok(existing_file) ->
-            annotation.merge_inferred(existing_file, inferred)
-          Error(_parse_error) ->
-            AssayFile(lines: list.map(inferred, AnnotationLine))
-        }
-        write_assay_file(assay_path, assay_file)
+    case inferred, existing_file {
+      [], Error(Nil) -> Ok(Nil)
+      _, Ok(file) -> {
+        let merged = annotation.merge_inferred(file, inferred)
+        write_assay_file(assay_path, merged)
       }
-      _, Error(_no_file) -> {
+      _, Error(Nil) -> {
         let assay_file = AssayFile(lines: list.map(inferred, AnnotationLine))
         write_assay_file(assay_path, assay_file)
       }
@@ -176,6 +183,19 @@ pub fn gleam_to_assay_path(gleam_path: String, source_directory: String) -> Stri
 }
 
 // PRIVATE
+
+fn enrich_kb(
+  assay_file: AssayFile,
+  knowledge_base: KnowledgeBase,
+) -> #(KnowledgeBase, List(types.EffectAnnotation)) {
+  let checks = annotation.extract_checks(assay_file)
+  let type_fields = annotation.extract_type_fields(assay_file)
+  let externs = annotation.extract_externs(assay_file)
+  let kb =
+    effects.with_type_fields(knowledge_base, type_fields)
+    |> effects.with_externs(externs)
+  #(kb, checks)
+}
 
 fn find_assay_files(directory: String) -> Result(List(String), AssayError) {
   let priv_directory = case directory {
@@ -257,12 +277,7 @@ fn check_file(
     annotation.parse_file(assay_content)
     |> result.map_error(AssayParseError(gleam_path, _)),
   )
-  let check_annotations = annotation.extract_checks(assay_file)
-  let type_fields = annotation.extract_type_fields(assay_file)
-  let externs = annotation.extract_externs(assay_file)
-  let kb =
-    effects.with_type_fields(knowledge_base, type_fields)
-    |> effects.with_externs(externs)
+  let #(kb, check_annotations) = enrich_kb(assay_file, knowledge_base)
 
   use module <- result.try(read_and_parse_gleam(gleam_path))
 
