@@ -70,12 +70,12 @@ Three annotation types in `.assay` files:
 
 The checker walks the Gleam AST (via [glance](https://hexdocs.pm/glance/)), resolves imports, follows local calls transitively, and unions the effect sets. If the actual effects aren't a subset of the declared budget, it's a violation.
 
-Effect knowledge comes from four sources:
+Effect knowledge is resolved in priority order:
 
-1. `extern` declarations in your `.assay` files
-2. Dependency `.assay` files in `build/packages/*/priv/assay/`
-3. Built-in catalog (stdlib: `gleam/io` -> `[Stdout]`, etc.)
-4. Conservative default: unknown functions get `[Unknown]`
+1. **Your `.assay` files** — `extern` declarations you write for your project
+2. **Dependency `.assay` files** — shipped by libraries in `build/packages/*/priv/assay/`
+3. **Bundled catalog** — versioned catalog files shipped with assay (see below)
+4. **Conservative default** — unknown functions get `[Unknown]`
 
 ## Higher-order functions
 
@@ -112,7 +112,18 @@ extern simplifile.read : [FileSystem]
 extern gleam/otp/actor.start : [Process]
 ```
 
-Externs are merged into the knowledge base before checking, so calls to these functions resolve with the declared effects instead of `[Unknown]`.
+Externs are merged into the knowledge base before both `infer` and `check`, so calls to these functions resolve with the declared effects instead of `[Unknown]`.
+
+This is also the right mechanism for **FFI functions**. If your project has Erlang or JavaScript FFI implementations, the checker can't analyze the foreign code and will flag those calls as `[Unknown]`. Declare their effects with `extern` in your `.assay` file:
+
+```
+// priv/assay/my_app.assay
+extern my_app/native.hash_password : [Crypto]
+extern my_app/native.read_env : [System]
+extern my_app/native.pure_helper : []
+```
+
+Since externs are loaded before inference, `assay infer` will propagate the declared effects through callers correctly — no `[Unknown]` noise.
 
 ## .assay file format
 
@@ -131,8 +142,71 @@ effects apply(f: [Stdout]) : [Stdout]
 
 - `[]` means pure — no effects allowed
 - `[Http, Dom]` — these specific effects are permitted
+
+## Effect labels
+
+Effect labels are plain strings — you can use any name. The bundled catalog uses these conventions:
+
+| Label | Meaning | Example functions |
+|---|---|---|
+| `Stdout` | Writes to standard output | `gleam/io.println`, `gleam/io.debug` |
+| `Stderr` | Writes to standard error | `gleam/io.print_error` |
+| `Stdin` | Reads from standard input | `gleam/erlang.get_line` |
+| `Process` | Spawns, sends to, or manages BEAM processes | `gleam/erlang/process.send`, `gleam/otp/actor.start` |
+| `Http` | Network HTTP requests | `gleam/httpc.send`, `lustre_http.get` |
+| `FileSystem` | Reads or writes the filesystem | `simplifile.read`, `simplifile.write` |
+You can define your own labels for project-specific effects:
+
+```
+extern my_app/email.send : [Email]
+extern my_app/metrics.record : [Telemetry]
+check handle_request : [Http, Email]
+```
 - `assay infer` regenerates `effects` lines while preserving `check` lines, `type` lines, comments, and blank lines
 - `assay format` normalizes spacing and sorting
+
+## Effect catalog
+
+assay ships with versioned catalog files for common Gleam packages, so you get effect knowledge out of the box without writing `extern` declarations for standard libraries.
+
+Catalog files live in `priv/catalog/` and are named `{package}@{version}.assay`. At load time, assay reads your project's `manifest.toml` to determine installed dependency versions, then selects the highest catalog version that doesn't exceed the installed version.
+
+For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gleam_stdlib@0.70.0.assay`, that file is used — effects don't change between patch versions. A new catalog file is only needed when a library adds modules or changes effect semantics.
+
+### Covered packages
+
+| Package | Effects | Labels |
+|---|---|---|
+| **gleam_stdlib** | `gleam/io.*` | `Stdout`, `Stderr` |
+| **gleam_erlang** | `gleam/erlang/process.*` | `Process`, `Stdin`, `FileSystem` |
+| **gleam_otp** | `gleam/otp/actor.*`, `gleam/otp/supervisor.*` | `Process` |
+| **gleam_http** | (pure) | — |
+| **gleam_httpc** | `gleam/httpc.send` | `Http` |
+| **gleam_json** | (pure) | — |
+| **lustre** | (pure) | — |
+| **lustre_http** | `lustre_http.*` | `Http` |
+| **simplifile** | `simplifile.*` | `FileSystem` |
+| **filepath** | (pure) | — |
+| **gleam_regexp** | (pure) | — |
+| **gleam_yielder** | (pure) | — |
+| **gleam_crypto** | (pure) | — |
+| **tom** | (pure) | — |
+
+Module-level declarations like `extern gleam/list : []` mark an entire module as pure — any function from that module resolves as effect-free.
+
+### Adding your own catalog entries
+
+For packages not in the catalog, use `extern` declarations in your project's `.assay` files:
+
+```
+// priv/assay/app.assay
+extern some_package/module.function : [Http]
+extern some_package/pure_module : []
+```
+
+### Contributing catalog files
+
+To add a new package to the bundled catalog, create `priv/catalog/{package}@{version}.assay` with `extern` declarations for its modules and functions. Only one version file per package is needed — the version resolution algorithm handles older installations.
 
 ## Commands
 

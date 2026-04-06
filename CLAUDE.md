@@ -67,6 +67,10 @@ extern simplifile.read : [FileSystem]
 
 ## Effect Resolution
 
+Knowledge base priority: user externs > dependency `.assay` files > versioned catalog (`priv/catalog/`) > Unknown.
+
+Catalog files are named `{package}@{version}.assay` and resolved against `manifest.toml` — picks highest catalog version <= installed version.
+
 Three call categories in the extractor:
 
 1. **Resolved calls** — qualified module.function calls, looked up in knowledge base
