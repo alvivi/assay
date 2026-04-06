@@ -1,0 +1,9 @@
+// gleam_otp — OTP actors and supervisors
+
+extern gleam/otp/actor.start : [Process]
+extern gleam/otp/actor.start_spec : [Process]
+extern gleam/otp/actor.send : [Process]
+extern gleam/otp/actor.call : [Process]
+
+extern gleam/otp/supervisor.start : [Process]
+extern gleam/otp/supervisor.start_spec : [Process]

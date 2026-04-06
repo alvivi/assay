@@ -1,0 +1,16 @@
+// gleam_erlang — process and system functions
+
+extern gleam/erlang/process.send : [Process]
+extern gleam/erlang/process.start : [Process]
+extern gleam/erlang/process.sleep : [Process]
+extern gleam/erlang/process.sleep_forever : [Process]
+extern gleam/erlang/process.call : [Process]
+extern gleam/erlang/process.try_call : [Process]
+extern gleam/erlang/process.link : [Process]
+extern gleam/erlang/process.unlink : [Process]
+extern gleam/erlang/process.monitor_process : [Process]
+extern gleam/erlang/process.new_subject : [Process]
+extern gleam/erlang/process.receive : [Process]
+
+extern gleam/erlang.get_line : [Stdin]
+extern gleam/erlang.priv_directory : [FileSystem]

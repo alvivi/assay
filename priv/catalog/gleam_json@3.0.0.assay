@@ -1,0 +1,3 @@
+// gleam_json — pure JSON encoding/decoding
+
+extern gleam/json : []

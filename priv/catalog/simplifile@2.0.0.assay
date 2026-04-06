@@ -1,0 +1,14 @@
+// simplifile — filesystem operations
+
+extern simplifile.read : [FileSystem]
+extern simplifile.write : [FileSystem]
+extern simplifile.append : [FileSystem]
+extern simplifile.delete : [FileSystem]
+extern simplifile.read_directory : [FileSystem]
+extern simplifile.create_directory : [FileSystem]
+extern simplifile.create_directory_all : [FileSystem]
+extern simplifile.get_files : [FileSystem]
+extern simplifile.is_file : [FileSystem]
+extern simplifile.is_directory : [FileSystem]
+extern simplifile.rename : [FileSystem]
+extern simplifile.copy_file : [FileSystem]

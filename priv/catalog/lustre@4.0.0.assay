@@ -1,0 +1,10 @@
+// lustre — pure element modules and effect functions
+
+extern lustre/element : []
+extern lustre/element/html : []
+extern lustre/element/svg : []
+extern lustre/attribute : []
+extern lustre/event : []
+
+extern lustre/effect.from : [Effect]
+extern lustre/effect.batch : [Effect]

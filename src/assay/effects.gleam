@@ -4,11 +4,14 @@ import assay/types.{
   type TypeFieldAnnotation, Effects, QualifiedName,
 }
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
+import gleam/order
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import simplifile
+import tom
 
 pub type EffectLookup {
   Known(Set(String))
@@ -25,27 +28,29 @@ pub type KnowledgeBase {
   )
 }
 
-/// Build a knowledge base by scanning dependency .assay files,
-/// merged with the hardcoded catalog.
+/// Build a knowledge base by scanning dependency .assay files
+/// and loading versioned catalog files from priv/catalog/.
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
-  let catalog = catalog_effectful_functions()
-  let merged = dict.merge(dep_effects, catalog)
+  let catalog_dir = find_catalog_directory()
+  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
-    all_effects: merged,
+    all_effects: dict.merge(dep_effects, cat_effects),
     param_bounds: dep_params,
     type_fields: dict.new(),
-    pure_modules: catalog_pure_modules(),
+    pure_modules: cat_pure,
   )
 }
 
-/// Build a knowledge base from the hardcoded catalog only.
+/// Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
+  let catalog_dir = find_catalog_directory()
+  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
-    all_effects: catalog_effectful_functions(),
+    all_effects: cat_effects,
     param_bounds: dict.new(),
     type_fields: dict.new(),
-    pure_modules: catalog_pure_modules(),
+    pure_modules: cat_pure,
   )
 }
 
@@ -74,15 +79,21 @@ pub fn with_type_fields(
 }
 
 /// Merge extern annotations into a knowledge base.
+/// Module-level externs (function == "") with empty effects are added as pure modules.
+/// Function-level externs are added to all_effects.
 pub fn with_externs(
   knowledge_base: KnowledgeBase,
   externs: List(ExternAnnotation),
 ) -> KnowledgeBase {
-  let merged =
-    list.fold(externs, knowledge_base.all_effects, fn(acc, ext) {
-      dict.insert(acc, QualifiedName(ext.module, ext.function), ext.effects)
+  let #(effects, pure) =
+    list.fold(externs, #(knowledge_base.all_effects, knowledge_base.pure_modules), fn(acc, ext) {
+      let #(eff_map, pure_set) = acc
+      case ext.function {
+        "" -> #(eff_map, set.insert(pure_set, ext.module))
+        _ -> #(dict.insert(eff_map, QualifiedName(ext.module, ext.function), ext.effects), pure_set)
+      }
     })
-  KnowledgeBase(..knowledge_base, all_effects: merged)
+  KnowledgeBase(..knowledge_base, all_effects: effects, pure_modules: pure)
 }
 
 /// Look up the effect set for a qualified function name.
@@ -186,42 +197,166 @@ fn file_path_to_module(path: String, assay_directory: String) -> String {
   string.replace(relative, ".assay", "")
 }
 
-fn catalog_effectful_functions() -> Dict(QualifiedName, Set(String)) {
-  [
-    #(QualifiedName("gleam/io", "println"), set.from_list(["Stdout"])),
-    #(QualifiedName("gleam/io", "print"), set.from_list(["Stdout"])),
-    #(QualifiedName("gleam/io", "debug"), set.from_list(["Stdout"])),
-    #(QualifiedName("gleam/io", "print_error"), set.from_list(["Stderr"])),
-    #(QualifiedName("gleam/io", "println_error"), set.from_list(["Stderr"])),
-    #(QualifiedName("gleam/erlang/process", "send"), set.from_list(["Process"])),
-    #(
-      QualifiedName("gleam/erlang/process", "start"),
-      set.from_list(["Process"]),
-    ),
-    #(
-      QualifiedName("gleam/erlang/process", "sleep"),
-      set.from_list(["Process"]),
-    ),
-    #(
-      QualifiedName("gleam/erlang/process", "sleep_forever"),
-      set.from_list(["Process"]),
-    ),
-    #(QualifiedName("lustre_http", "send"), set.from_list(["Http"])),
-    #(QualifiedName("lustre_http", "get"), set.from_list(["Http"])),
-    #(QualifiedName("lustre_http", "post"), set.from_list(["Http"])),
-    #(QualifiedName("lustre/effect", "from"), set.from_list(["Effect"])),
-    #(QualifiedName("lustre/effect", "batch"), set.from_list(["Effect"])),
-  ]
-  |> dict.from_list()
+fn find_catalog_directory() -> String {
+  let installed = "build/packages/assay/priv/catalog"
+  case simplifile.is_directory(installed) {
+    Ok(True) -> installed
+    _ -> "priv/catalog"
+  }
 }
 
-fn catalog_pure_modules() -> Set(String) {
-  set.from_list([
-    "gleam/list", "gleam/string", "gleam/int", "gleam/float", "gleam/bool",
-    "gleam/option", "gleam/result", "gleam/dict", "gleam/set", "gleam/pair",
-    "gleam/order", "gleam/bit_array", "gleam/bytes_tree", "gleam/string_tree",
-    "gleam/regex", "gleam/uri", "gleam/dynamic", "lustre/element",
-    "lustre/element/html", "lustre/element/svg", "lustre/attribute",
-    "lustre/event",
-  ])
+fn load_catalog(
+  catalog_dir: String,
+  manifest_path: String,
+) -> #(Dict(QualifiedName, Set(String)), Set(String)) {
+  let installed_versions = parse_manifest_versions(manifest_path)
+  let catalog_files = case simplifile.get_files(catalog_dir) {
+    Ok(files) -> list.filter(files, fn(f) { string.ends_with(f, ".assay") })
+    Error(_) -> []
+  }
+
+  let selected = resolve_catalog_files(catalog_files, installed_versions)
+
+  let all_externs =
+    list.flat_map(selected, fn(file_path) {
+      case simplifile.read(file_path) {
+        Error(_) -> []
+        Ok(content) ->
+          case annotation.parse_file(content) {
+            Error(_) -> []
+            Ok(assay_file) -> annotation.extract_externs(assay_file)
+          }
+      }
+    })
+
+  // Reuse the same extern dispatch logic as with_externs
+  let empty_kb = KnowledgeBase(
+    all_effects: dict.new(),
+    param_bounds: dict.new(),
+    type_fields: dict.new(),
+    pure_modules: set.new(),
+  )
+  let merged = with_externs(empty_kb, all_externs)
+  #(merged.all_effects, merged.pure_modules)
+}
+
+fn resolve_catalog_files(
+  catalog_files: List(String),
+  installed_versions: Dict(String, String),
+) -> List(String) {
+  // Parse filenames: "path/to/gleam_stdlib@0.70.0.assay" → #("gleam_stdlib", #(0,70,0), path)
+  let parsed =
+    list.filter_map(catalog_files, fn(path) {
+      let filename =
+        path
+        |> string.split("/")
+        |> list.last()
+        |> result.unwrap("")
+        |> string.replace(".assay", "")
+      case string.split(filename, "@") {
+        [package, version] -> Ok(#(package, parse_semver(version), path))
+        _ -> Error(Nil)
+      }
+    })
+
+  // Group by package name
+  let grouped =
+    list.fold(parsed, dict.new(), fn(acc, entry) {
+      let #(package, version, path) = entry
+      let existing = dict.get(acc, package) |> result.unwrap([])
+      dict.insert(acc, package, [#(version, path), ..existing])
+    })
+
+  // For each installed package, pick best catalog version
+  dict.fold(grouped, [], fn(selected, package, versions) {
+    case dict.get(installed_versions, package) {
+      Error(Nil) -> selected
+      Ok(installed_str) -> {
+        let installed = parse_semver(installed_str)
+        let best = pick_best_version(versions, installed)
+        case best {
+          Ok(path) -> [path, ..selected]
+          Error(Nil) -> selected
+        }
+      }
+    }
+  })
+}
+
+fn pick_best_version(
+  versions: List(#(#(Int, Int, Int), String)),
+  installed: #(Int, Int, Int),
+) -> Result(String, Nil) {
+  // Pick highest version ≤ installed; if none, pick highest available
+  let eligible =
+    list.filter(versions, fn(v) { semver_lte(v.0, installed) })
+    |> list.sort(fn(a, b) { compare_semver(b.0, a.0) })
+  case eligible {
+    [best, ..] -> Ok(best.1)
+    [] ->
+      // Fallback: use highest available catalog version
+      case list.sort(versions, fn(a, b) { compare_semver(b.0, a.0) }) {
+        [best, ..] -> Ok(best.1)
+        [] -> Error(Nil)
+      }
+  }
+}
+
+fn parse_semver(version: String) -> #(Int, Int, Int) {
+  case string.split(version, ".") {
+    [major, minor, patch] -> #(
+      int.parse(major) |> result.unwrap(0),
+      int.parse(minor) |> result.unwrap(0),
+      int.parse(patch) |> result.unwrap(0),
+    )
+    [major, minor] -> #(
+      int.parse(major) |> result.unwrap(0),
+      int.parse(minor) |> result.unwrap(0),
+      0,
+    )
+    _ -> #(0, 0, 0)
+  }
+}
+
+fn semver_lte(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> Bool {
+  compare_semver(a, b) != order.Gt
+}
+
+fn compare_semver(
+  a: #(Int, Int, Int),
+  b: #(Int, Int, Int),
+) -> order.Order {
+  case int.compare(a.0, b.0) {
+    order.Eq ->
+      case int.compare(a.1, b.1) {
+        order.Eq -> int.compare(a.2, b.2)
+        other -> other
+      }
+    other -> other
+  }
+}
+
+fn parse_manifest_versions(manifest_path: String) -> Dict(String, String) {
+  let parsed = {
+    use content <- result.try(
+      simplifile.read(manifest_path) |> result.map_error(fn(_) { Nil }),
+    )
+    use toml <- result.try(
+      tom.parse(content) |> result.map_error(fn(_) { Nil }),
+    )
+    use packages <- result.try(
+      tom.get_array(toml, ["packages"]) |> result.map_error(fn(_) { Nil }),
+    )
+    Ok(list.fold(packages, dict.new(), fn(acc, pkg) {
+      case pkg {
+        tom.InlineTable(table) ->
+          case tom.get_string(table, ["name"]), tom.get_string(table, ["version"]) {
+            Ok(name), Ok(version) -> dict.insert(acc, name, version)
+            _, _ -> acc
+          }
+        _ -> acc
+      }
+    }))
+  }
+  result.unwrap(parsed, dict.new())
 }

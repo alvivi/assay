@@ -90,7 +90,11 @@ pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
 
 /// Render an ExternAnnotation back to its .assay line format.
 pub fn format_extern(ext: ExternAnnotation) -> String {
-  "extern " <> ext.module <> "." <> ext.function <> " : " <> format_effect_set(ext.effects)
+  let name = case ext.function {
+    "" -> ext.module
+    f -> ext.module <> "." <> f
+  }
+  "extern " <> name <> " : " <> format_effect_set(ext.effects)
 }
 
 /// Extract extern annotations from a parsed file.
@@ -321,18 +325,19 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   }
 }
 
-// The last "." separates module path from function name (module uses "/" not ".")
+// No "." → module-level extern (e.g., `extern gleam/list : []`)
+// Has "." → function-level extern (e.g., `extern gleam/io.println : [Stdout]`)
 fn parse_extern_line(rest: String) -> Result(ExternAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
   let segments = string.split(qualified, ".")
   let len = list.length(segments)
-  case len >= 2 {
-    True -> {
+  case len {
+    1 -> Ok(ExternAnnotation(module: qualified, function: "", effects:))
+    _ -> {
       let assert Ok(function) = list.last(segments)
       let module = segments |> list.take(len - 1) |> string.join(".")
       Ok(ExternAnnotation(module:, function:, effects:))
     }
-    False -> Error(Nil)
   }
 }
 

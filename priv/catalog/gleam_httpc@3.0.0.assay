@@ -1,0 +1,3 @@
+// gleam_httpc — HTTP client
+
+extern gleam/httpc.send : [Http]
