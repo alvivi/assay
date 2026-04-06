@@ -1,7 +1,8 @@
 import assay/types.{
   type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
-  type ParamBound, AnnotationLine, AssayFile, BlankLine, Check, CommentLine,
-  EffectAnnotation, Effects, ParamBound,
+  type ParamBound, type TypeFieldAnnotation, AnnotationLine, AssayFile, BlankLine,
+  Check, CommentLine, EffectAnnotation, Effects, ParamBound, TypeFieldAnnotation,
+  TypeFieldLine,
 }
 import gleam/bool
 import gleam/dict
@@ -37,6 +38,7 @@ pub fn extract_annotations(file: AssayFile) -> List(EffectAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
       AnnotationLine(annotation) -> Ok(annotation)
+      TypeFieldLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
@@ -69,12 +71,28 @@ pub fn format_annotation(annotation: EffectAnnotation) -> String {
   prefix <> " " <> annotation.function <> params_string <> " : " <> effects_string
 }
 
+/// Render a TypeFieldAnnotation back to its .assay line format.
+pub fn format_type_field(tf: TypeFieldAnnotation) -> String {
+  "type " <> tf.type_name <> "." <> tf.field <> " : " <> format_effect_set(tf.effects)
+}
+
+/// Extract type field annotations from a parsed file.
+pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      TypeFieldLine(tf) -> Ok(tf)
+      _ -> Error(Nil)
+    }
+  })
+}
+
 /// Render a full AssayFile back to a string, preserving structure.
 pub fn format_file(file: AssayFile) -> String {
   file.lines
   |> list.map(fn(line) {
     case line {
       AnnotationLine(annotation) -> format_annotation(annotation)
+      TypeFieldLine(tf) -> format_type_field(tf)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -114,6 +132,7 @@ pub fn merge_inferred(
               }
             Check -> #([line, ..lines], placed_set)
           }
+        TypeFieldLine(_) -> #([line, ..lines], placed_set)
         CommentLine(_) -> #([line, ..lines], placed_set)
         BlankLine -> #([line, ..lines], placed_set)
       }
@@ -151,8 +170,16 @@ pub fn format_sorted(file: AssayFile) -> String {
     |> list.sort(fn(left, right) { string.compare(left.function, right.function) })
     |> list.map(format_annotation)
 
+  let type_field_lines =
+    extract_type_fields(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.type_name <> "." <> left.field, right.type_name <> "." <> right.field)
+    })
+    |> list.map(format_type_field)
+
   let sections = [
     comments,
+    type_field_lines,
     check_lines,
     effects_lines,
   ]
@@ -178,6 +205,11 @@ fn parse_structured_line(
       case parse_annotation_line(trimmed, line_number, line) {
         Ok(annotation) -> Ok(AnnotationLine(annotation))
         Error(parse_error) -> Error(parse_error)
+      }
+    "type " <> rest ->
+      case parse_type_field_line(rest) {
+        Ok(tf) -> Ok(TypeFieldLine(tf))
+        Error(Nil) -> Error(InvalidLine(line_number, line))
       }
     _ -> Error(InvalidLine(line_number, line))
   }
@@ -243,6 +275,17 @@ fn parse_annotation_rest(
           }
       }
     }
+  }
+}
+
+// Parse "TypeName.field_name : [effects]"
+fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
+  use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
+  // qualified is already trimmed by parse_name_colon_effects
+  case string.split(qualified, ".") {
+    [type_name, field] if type_name != "" && field != "" ->
+      Ok(TypeFieldAnnotation(type_name:, field:, effects:))
+    _ -> Error(Nil)
   }
 }
 
@@ -313,6 +356,7 @@ fn collect_comments(lines: List(AssayLine)) -> List(String) {
     case line {
       CommentLine(text) -> Ok(text)
       AnnotationLine(_) -> Error(Nil)
+      TypeFieldLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
   })

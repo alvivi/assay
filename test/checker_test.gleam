@@ -222,3 +222,57 @@ pub fn run(items) {
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
+
+// Field call tests (Case 4)
+
+fn check_source_with_type_fields(
+  source: String,
+  annotations: List(EffectAnnotation),
+  type_fields: List(types.TypeFieldAnnotation),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let kb = effects.with_type_fields(knowledge_base(), type_fields)
+  checker.check(module, annotations, kb)
+}
+
+// Typed param + registry entry → effects resolve correctly
+pub fn field_call_typed_with_registry_test() {
+  let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
+  let type_fields = [
+    types.TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"])),
+  ]
+  let annotation =
+    EffectAnnotation(Check, "view", [], set.from_list(["Dom"]))
+  check_source_with_type_fields(source, [annotation], type_fields)
+  |> should.equal([])
+}
+
+// Field effects exceed declared budget → violation
+pub fn field_call_violates_check_test() {
+  let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
+  let type_fields = [
+    types.TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"])),
+  ]
+  let annotation = EffectAnnotation(Check, "view", [], set.new())
+  check_source_with_type_fields(source, [annotation], type_fields)
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}
+
+// Typed param but no registry entry → Unknown
+pub fn field_call_typed_no_registry_is_unknown_test() {
+  let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
+  let annotation = EffectAnnotation(Check, "view", [], set.new())
+  check_source_with_type_fields(source, [annotation], [])
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}
+
+// Untyped param → Unknown
+pub fn field_call_untyped_is_unknown_test() {
+  let source = "pub fn view(handler) { handler.on_click(event) }"
+  let annotation = EffectAnnotation(Check, "view", [], set.new())
+  check_source(source, [annotation])
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}

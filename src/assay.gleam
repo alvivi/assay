@@ -258,10 +258,12 @@ fn check_file(
     |> result.map_error(AssayParseError(gleam_path, _)),
   )
   let check_annotations = annotation.extract_checks(assay_file)
+  let type_fields = annotation.extract_type_fields(assay_file)
+  let kb = effects.with_type_fields(knowledge_base, type_fields)
 
   use module <- result.try(read_and_parse_gleam(gleam_path))
 
-  let violations = checker.check(module, check_annotations, knowledge_base)
+  let violations = checker.check(module, check_annotations, kb)
   Ok(CheckResult(file: gleam_path, violations:))
 }
 

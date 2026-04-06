@@ -1,5 +1,8 @@
 import assay/annotation
-import assay/types.{type ParamBound, type QualifiedName, Effects, QualifiedName}
+import assay/types.{
+  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Effects,
+  QualifiedName,
+}
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/result
@@ -17,6 +20,7 @@ pub type KnowledgeBase {
   KnowledgeBase(
     all_effects: Dict(QualifiedName, Set(String)),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
+    type_fields: Dict(#(String, String), Set(String)),
     pure_modules: Set(String),
   )
 }
@@ -30,6 +34,7 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   KnowledgeBase(
     all_effects: merged,
     param_bounds: dep_params,
+    type_fields: dict.new(),
     pure_modules: catalog_pure_modules(),
   )
 }
@@ -39,8 +44,33 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
   KnowledgeBase(
     all_effects: catalog_effectful_functions(),
     param_bounds: dict.new(),
+    type_fields: dict.new(),
     pure_modules: catalog_pure_modules(),
   )
+}
+
+/// Look up effects for a type's field.
+pub fn lookup_type_field(
+  knowledge_base: KnowledgeBase,
+  type_name: String,
+  field: String,
+) -> EffectLookup {
+  case dict.get(knowledge_base.type_fields, #(type_name, field)) {
+    Ok(effect_set) -> Known(effect_set)
+    Error(Nil) -> Unknown
+  }
+}
+
+/// Merge type field annotations into a knowledge base.
+pub fn with_type_fields(
+  knowledge_base: KnowledgeBase,
+  type_fields: List(TypeFieldAnnotation),
+) -> KnowledgeBase {
+  let merged =
+    list.fold(type_fields, knowledge_base.type_fields, fn(acc, tf) {
+      dict.insert(acc, #(tf.type_name, tf.field), tf.effects)
+    })
+  KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
 /// Look up the effect set for a qualified function name.

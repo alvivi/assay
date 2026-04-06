@@ -5,6 +5,7 @@ import assay/types.{
   Effects, QualifiedName, Violation,
 }
 import glance.{type Definition, type Function, type Module}
+import gleam/option.{Some}
 import gleam/dict
 import gleam/list
 import gleam/set.{type Set}
@@ -164,5 +165,45 @@ fn collect_effects(
       }
     })
 
-  list.append(resolved_effects, local_effects)
+  let field_effects =
+    list.map(result.field, fn(field_call) {
+      let synthetic_call =
+        types.ResolvedCall(
+          name: QualifiedName(
+            module: "<field>",
+            function: field_call.object <> "." <> field_call.label,
+          ),
+          span: field_call.span,
+        )
+      let effect_set = resolve_field_call(field_call, function, knowledge_base)
+      #(synthetic_call, effect_set)
+    })
+
+  list.flatten([resolved_effects, local_effects, field_effects])
+}
+
+fn resolve_field_call(
+  field_call: types.FieldCall,
+  function: Function,
+  knowledge_base: KnowledgeBase,
+) -> Set(String) {
+  let unknown = set.from_list(["Unknown"])
+  let param =
+    list.find(function.parameters, fn(p) {
+      case p.name {
+        glance.Named(name) -> name == field_call.object
+        glance.Discarded(_) -> False
+      }
+    })
+  case param {
+    Ok(glance.FunctionParameter(
+      type_: Some(glance.NamedType(name: type_name, ..)),
+      ..,
+    )) ->
+      case effects.lookup_type_field(knowledge_base, type_name, field_call.label) {
+        effects.Known(effect_set) -> effect_set
+        effects.Unknown -> unknown
+      }
+    _ -> unknown
+  }
 }

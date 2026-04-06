@@ -1,6 +1,6 @@
 import assay/types.{
-  type LocalCall, type QualifiedName, type ResolvedCall, LocalCall,
-  QualifiedName, ResolvedCall,
+  type FieldCall, type LocalCall, type QualifiedName, type ResolvedCall,
+  FieldCall, LocalCall, QualifiedName, ResolvedCall,
 }
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
@@ -21,7 +21,11 @@ pub type ImportContext {
 
 /// Result of extracting calls from a function body.
 pub type ExtractResult {
-  ExtractResult(resolved: List(ResolvedCall), local: List(LocalCall))
+  ExtractResult(
+    resolved: List(ResolvedCall),
+    local: List(LocalCall),
+    field: List(FieldCall),
+  )
 }
 
 /// Build import context from a parsed module's imports.
@@ -72,7 +76,7 @@ pub fn extract_calls(
 ) -> ExtractResult {
   list.fold(
     statements,
-    ExtractResult(resolved: [], local: []),
+    empty(),
     fn(accumulated, statement) {
       merge(accumulated, extract_from_statement(statement, context))
     },
@@ -135,9 +139,14 @@ fn extract_from_expression(
               ResolvedCall(QualifiedName(module_path, function_name), span),
             ],
             local: [],
+            field: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(function_name, span)])
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [FieldCall(alias, function_name, span)],
+          )
       }
       merge(call_result, extract_from_arguments(arguments, context))
     }
@@ -149,9 +158,10 @@ fn extract_from_expression(
           ExtractResult(
             resolved: [ResolvedCall(qualified_name, span)],
             local: [],
+            field: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(name, span)])
+          ExtractResult(resolved: [], local: [LocalCall(name, span)], field: [])
       }
       merge(call_result, extract_from_arguments(arguments, context))
     }
@@ -261,9 +271,14 @@ fn extract_pipe_target(
               ResolvedCall(QualifiedName(module_path, function_name), span),
             ],
             local: [],
+            field: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(function_name, span)])
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [FieldCall(alias, function_name, span)],
+          )
       }
 
     glance.Variable(location: span, name:) ->
@@ -272,9 +287,10 @@ fn extract_pipe_target(
           ExtractResult(
             resolved: [ResolvedCall(qualified_name, span)],
             local: [],
+            field: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(name, span)])
+          ExtractResult(resolved: [], local: [LocalCall(name, span)], field: [])
       }
 
     // Call with extra args or other expression — handle normally
@@ -329,12 +345,13 @@ fn merge_optional(
 }
 
 fn empty() -> ExtractResult {
-  ExtractResult(resolved: [], local: [])
+  ExtractResult(resolved: [], local: [], field: [])
 }
 
 fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
   ExtractResult(
     resolved: list.append(left.resolved, right.resolved),
     local: list.append(left.local, right.local),
+    field: list.append(left.field, right.field),
   )
 }

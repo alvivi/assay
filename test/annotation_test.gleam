@@ -1,7 +1,7 @@
 import assay/annotation
 import assay/types.{
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ParamBound,
+  Effects, ParamBound, TypeFieldAnnotation, TypeFieldLine,
 }
 import gleam/set
 import gleeunit/should
@@ -294,6 +294,52 @@ pub fn param_bound_round_trip_test() {
   let input = "effects apply(f: [Stdout]) : []\n"
   let assert Ok(file) = annotation.parse_file(input)
   annotation.format_file(file) |> should.equal(input)
+}
+
+// --- Type field annotations ---
+
+pub fn parse_type_field_test() {
+  let input = "type Handler.on_click : [Dom]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let tfs = annotation.extract_type_fields(file)
+  let assert [tf] = tfs
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+  tf.effects |> should.equal(set.from_list(["Dom"]))
+}
+
+pub fn parse_type_field_multiple_effects_test() {
+  let input = "type Request.send : [Http, Io]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.effects |> should.equal(set.from_list(["Http", "Io"]))
+}
+
+pub fn format_type_field_test() {
+  let tf = TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"]))
+  annotation.format_type_field(tf)
+  |> should.equal("type Handler.on_click : [Dom]")
+}
+
+pub fn type_field_round_trip_test() {
+  let input = "type Handler.on_click : [Dom]\n"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_file(file) |> should.equal(input)
+}
+
+pub fn merge_preserves_type_fields_test() {
+  let file =
+    AssayFile(lines: [
+      TypeFieldLine(TypeFieldAnnotation("Handler", "on_click", set.from_list(["Dom"]))),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
+    ])
+  let inferred = [
+    EffectAnnotation(Effects, "view", [], set.from_list(["Stdout"])),
+  ]
+  let merged = annotation.merge_inferred(file, inferred)
+  let assert [TypeFieldLine(tf), AnnotationLine(ann)] = merged.lines
+  tf.type_name |> should.equal("Handler")
+  ann.effects |> should.equal(set.from_list(["Stdout"]))
 }
 
 pub fn merge_preserves_comments_test() {

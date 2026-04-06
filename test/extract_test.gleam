@@ -181,3 +181,33 @@ pub fn target() { output.println(\"hi\") }"
   |> list.map(fn(r) { r.name })
   |> should.equal([QualifiedName("gleam/io", "println")])
 }
+
+// Field call tests
+
+pub fn field_access_call_test() {
+  let src = "pub fn target(handler) { handler.on_click(event) }"
+  let result = parse_and_extract(src)
+  result.field |> list.length() |> should.equal(1)
+  let assert [fc] = result.field
+  fc.object |> should.equal("handler")
+  fc.label |> should.equal("on_click")
+  result.local |> should.equal([])
+}
+
+pub fn field_access_pipe_test() {
+  let src = "pub fn target(handler) { event |> handler.on_click }"
+  let result = parse_and_extract(src)
+  result.field |> list.length() |> should.equal(1)
+  let assert [fc] = result.field
+  fc.object |> should.equal("handler")
+  fc.label |> should.equal("on_click")
+}
+
+pub fn import_not_confused_with_field_test() {
+  let src =
+    "import gleam/io
+pub fn target() { io.println(\"hi\") }"
+  let result = parse_and_extract(src)
+  result.resolved |> list.length() |> should.equal(1)
+  result.field |> should.equal([])
+}

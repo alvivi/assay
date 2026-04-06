@@ -32,6 +32,7 @@ pub type EffectAnnotation {
 /// A single line in an .assay file, preserving structure for round-trip rewrites.
 pub type AssayLine {
   AnnotationLine(annotation: EffectAnnotation)
+  TypeFieldLine(type_field: TypeFieldAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -49,6 +50,16 @@ pub type ResolvedCall {
 /// A local (unresolved) call — needs transitive analysis.
 pub type LocalCall {
   LocalCall(function: String, span: Span)
+}
+
+/// A field access call: object.label(args) where object is a local variable.
+pub type FieldCall {
+  FieldCall(object: String, label: String, span: Span)
+}
+
+/// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
+pub type TypeFieldAnnotation {
+  TypeFieldAnnotation(type_name: String, field: String, effects: Set(String))
 }
 
 /// A single effect violation: an annotated function called something
