@@ -157,6 +157,8 @@ Effect labels are plain strings — you can use any name. The bundled catalog us
 | `Process` | Spawns, sends to, or manages BEAM processes | `gleam/erlang/process.send`, `gleam/otp/actor.start` |
 | `Http` | Network HTTP requests | `gleam/httpc.send`, `lustre_http.get` |
 | `FileSystem` | Reads or writes the filesystem | `simplifile.read`, `simplifile.write` |
+| `Dom` | Browser DOM manipulation | `lustre.start`, `lustre.register` |
+
 You can define your own labels for project-specific effects:
 
 ```
@@ -185,7 +187,7 @@ For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gl
 | **gleam_http** | (pure) | — |
 | **gleam_httpc** | `gleam/httpc.send` | `Http` |
 | **gleam_json** | (pure) | — |
-| **lustre** | (pure) | — |
+| **lustre** | `lustre.start`, `lustre.send`, `lustre/server_component.*` | `Process`, `Dom` |
 | **lustre_http** | `lustre_http.*` | `Http` |
 | **simplifile** | `simplifile.*` | `FileSystem` |
 | **filepath** | (pure) | — |

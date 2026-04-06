@@ -1,8 +1,30 @@
-// lustre — all pure: elements are data, effects are data descriptions
-
+// lustre — pure submodules for element/effect construction
 extern lustre/element : []
 extern lustre/element/html : []
 extern lustre/element/svg : []
+extern lustre/element/keyed : []
+extern lustre/element/mathml : []
 extern lustre/attribute : []
 extern lustre/event : []
 extern lustre/effect : []
+extern lustre/component : []
+extern lustre/dev/query : []
+
+// lustre — effectful runtime functions
+extern lustre.start : [Process, Dom]
+extern lustre.start_server_component : [Process]
+extern lustre.send : [Process]
+extern lustre.shutdown : [Process]
+extern lustre.register : [Dom]
+extern lustre.is_registered : [Dom]
+extern lustre.named : [Process]
+extern lustre.factory : [Process]
+
+// lustre/server_component — effectful runtime management
+extern lustre/server_component.subject : [Process]
+extern lustre/server_component.pid : [Process]
+extern lustre/server_component.register_subject : [Process]
+extern lustre/server_component.deregister_subject : [Process]
+extern lustre/server_component.register_callback : [Process]
+extern lustre/server_component.deregister_callback : [Process]
+extern lustre/server_component.emit : [Dom]
