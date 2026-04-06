@@ -276,3 +276,43 @@ pub fn field_call_untyped_is_unknown_test() {
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }
+
+// Extern declaration tests
+
+fn check_source_with_externs(
+  source: String,
+  annotations: List(EffectAnnotation),
+  externs: List(types.ExternAnnotation),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let kb = effects.with_externs(knowledge_base(), externs)
+  checker.check(module, annotations, kb)
+}
+
+// Extern resolves instead of Unknown
+pub fn extern_resolves_effects_test() {
+  let source =
+    "import gleam/httpc
+pub fn fetch() { httpc.send(request) }"
+  let externs = [
+    types.ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"])),
+  ]
+  let annotation =
+    EffectAnnotation(Check, "fetch", [], set.from_list(["Http"]))
+  check_source_with_externs(source, [annotation], externs)
+  |> should.equal([])
+}
+
+// Extern effect exceeds budget → violation
+pub fn extern_violates_check_test() {
+  let source =
+    "import gleam/httpc
+pub fn fetch() { httpc.send(request) }"
+  let externs = [
+    types.ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"])),
+  ]
+  let annotation = EffectAnnotation(Check, "fetch", [], set.new())
+  check_source_with_externs(source, [annotation], externs)
+  |> { fn(vs) { vs != [] } }
+  |> should.be_true()
+}

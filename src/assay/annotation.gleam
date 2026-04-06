@@ -1,7 +1,8 @@
 import assay/types.{
   type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
-  type ParamBound, type TypeFieldAnnotation, AnnotationLine, AssayFile, BlankLine,
-  Check, CommentLine, EffectAnnotation, Effects, ParamBound, TypeFieldAnnotation,
+  type ExternAnnotation, type ParamBound, type TypeFieldAnnotation,
+  AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
+  Effects, ExternAnnotation, ExternLine, ParamBound, TypeFieldAnnotation,
   TypeFieldLine,
 }
 import gleam/bool
@@ -39,6 +40,7 @@ pub fn extract_annotations(file: AssayFile) -> List(EffectAnnotation) {
     case line {
       AnnotationLine(annotation) -> Ok(annotation)
       TypeFieldLine(_) -> Error(Nil)
+      ExternLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
@@ -86,6 +88,21 @@ pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
   })
 }
 
+/// Render an ExternAnnotation back to its .assay line format.
+pub fn format_extern(ext: ExternAnnotation) -> String {
+  "extern " <> ext.module <> "." <> ext.function <> " : " <> format_effect_set(ext.effects)
+}
+
+/// Extract extern annotations from a parsed file.
+pub fn extract_externs(file: AssayFile) -> List(ExternAnnotation) {
+  list.filter_map(file.lines, fn(line) {
+    case line {
+      ExternLine(ext) -> Ok(ext)
+      _ -> Error(Nil)
+    }
+  })
+}
+
 /// Render a full AssayFile back to a string, preserving structure.
 pub fn format_file(file: AssayFile) -> String {
   file.lines
@@ -93,6 +110,7 @@ pub fn format_file(file: AssayFile) -> String {
     case line {
       AnnotationLine(annotation) -> format_annotation(annotation)
       TypeFieldLine(tf) -> format_type_field(tf)
+      ExternLine(ext) -> format_extern(ext)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -133,6 +151,7 @@ pub fn merge_inferred(
             Check -> #([line, ..lines], placed_set)
           }
         TypeFieldLine(_) -> #([line, ..lines], placed_set)
+        ExternLine(_) -> #([line, ..lines], placed_set)
         CommentLine(_) -> #([line, ..lines], placed_set)
         BlankLine -> #([line, ..lines], placed_set)
       }
@@ -177,8 +196,16 @@ pub fn format_sorted(file: AssayFile) -> String {
     })
     |> list.map(format_type_field)
 
+  let extern_lines =
+    extract_externs(file)
+    |> list.sort(fn(left, right) {
+      string.compare(left.module <> "." <> left.function, right.module <> "." <> right.function)
+    })
+    |> list.map(format_extern)
+
   let sections = [
     comments,
+    extern_lines,
     type_field_lines,
     check_lines,
     effects_lines,
@@ -209,6 +236,11 @@ fn parse_structured_line(
     "type " <> rest ->
       case parse_type_field_line(rest) {
         Ok(tf) -> Ok(TypeFieldLine(tf))
+        Error(Nil) -> Error(InvalidLine(line_number, line))
+      }
+    "extern " <> rest ->
+      case parse_extern_line(rest) {
+        Ok(ext) -> Ok(ExternLine(ext))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
     _ -> Error(InvalidLine(line_number, line))
@@ -289,6 +321,21 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   }
 }
 
+// The last "." separates module path from function name (module uses "/" not ".")
+fn parse_extern_line(rest: String) -> Result(ExternAnnotation, Nil) {
+  use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
+  let segments = string.split(qualified, ".")
+  let len = list.length(segments)
+  case len >= 2 {
+    True -> {
+      let assert Ok(function) = list.last(segments)
+      let module = segments |> list.take(len - 1) |> string.join(".")
+      Ok(ExternAnnotation(module:, function:, effects:))
+    }
+    False -> Error(Nil)
+  }
+}
+
 fn parse_params_section(input: String) -> Result(List(ParamBound), Nil) {
   case string.trim(input) {
     "" -> Ok([])
@@ -355,9 +402,7 @@ fn collect_comments(lines: List(AssayLine)) -> List(String) {
   list.filter_map(lines, fn(line) {
     case line {
       CommentLine(text) -> Ok(text)
-      AnnotationLine(_) -> Error(Nil)
-      TypeFieldLine(_) -> Error(Nil)
-      BlankLine -> Error(Nil)
+      _ -> Error(Nil)
     }
   })
 }

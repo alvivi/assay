@@ -33,6 +33,7 @@ pub type EffectAnnotation {
 pub type AssayLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
+  ExternLine(extern: ExternAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -60,6 +61,11 @@ pub type FieldCall {
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 pub type TypeFieldAnnotation {
   TypeFieldAnnotation(type_name: String, field: String, effects: Set(String))
+}
+
+/// Effect declaration for an external function (e.g., `extern gleam/httpc.send : [Http]`).
+pub type ExternAnnotation {
+  ExternAnnotation(module: String, function: String, effects: Set(String))
 }
 
 /// A single effect violation: an annotated function called something

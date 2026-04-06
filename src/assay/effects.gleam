@@ -1,7 +1,7 @@
 import assay/annotation
 import assay/types.{
-  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Effects,
-  QualifiedName,
+  type ExternAnnotation, type ParamBound, type QualifiedName,
+  type TypeFieldAnnotation, Effects, QualifiedName,
 }
 import gleam/dict.{type Dict}
 import gleam/list
@@ -71,6 +71,18 @@ pub fn with_type_fields(
       dict.insert(acc, #(tf.type_name, tf.field), tf.effects)
     })
   KnowledgeBase(..knowledge_base, type_fields: merged)
+}
+
+/// Merge extern annotations into a knowledge base.
+pub fn with_externs(
+  knowledge_base: KnowledgeBase,
+  externs: List(ExternAnnotation),
+) -> KnowledgeBase {
+  let merged =
+    list.fold(externs, knowledge_base.all_effects, fn(acc, ext) {
+      dict.insert(acc, QualifiedName(ext.module, ext.function), ext.effects)
+    })
+  KnowledgeBase(..knowledge_base, all_effects: merged)
 }
 
 /// Look up the effect set for a qualified function name.

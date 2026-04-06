@@ -1,7 +1,8 @@
 import assay/annotation
 import assay/types.{
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ParamBound, TypeFieldAnnotation, TypeFieldLine,
+  Effects, ExternAnnotation, ExternLine, ParamBound, TypeFieldAnnotation,
+  TypeFieldLine,
 }
 import gleam/set
 import gleeunit/should
@@ -366,4 +367,51 @@ pub fn merge_preserves_comments_test() {
   ] = merged.lines
   view_eff.effects |> should.equal(set.from_list(["Stdout"]))
   view_check.kind |> should.equal(Check)
+}
+
+// --- Extern annotations ---
+
+pub fn parse_extern_test() {
+  let input = "extern gleam/http/request.send : [Http]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let assert [ext] = annotation.extract_externs(file)
+  ext.module |> should.equal("gleam/http/request")
+  ext.function |> should.equal("send")
+  ext.effects |> should.equal(set.from_list(["Http"]))
+}
+
+pub fn parse_extern_pure_test() {
+  let input = "extern gleam/json.decode : []"
+  let assert Ok(file) = annotation.parse_file(input)
+  let assert [ext] = annotation.extract_externs(file)
+  ext.module |> should.equal("gleam/json")
+  ext.function |> should.equal("decode")
+  set.size(ext.effects) |> should.equal(0)
+}
+
+pub fn format_extern_test() {
+  let ext = ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"]))
+  annotation.format_extern(ext)
+  |> should.equal("extern gleam/httpc.send : [Http]")
+}
+
+pub fn extern_round_trip_test() {
+  let input = "extern gleam/httpc.send : [Http]\n"
+  let assert Ok(file) = annotation.parse_file(input)
+  annotation.format_file(file) |> should.equal(input)
+}
+
+pub fn merge_preserves_externs_test() {
+  let file =
+    AssayFile(lines: [
+      ExternLine(ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"]))),
+      AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
+    ])
+  let inferred = [
+    EffectAnnotation(Effects, "view", [], set.from_list(["Stdout"])),
+  ]
+  let merged = annotation.merge_inferred(file, inferred)
+  let assert [ExternLine(ext), AnnotationLine(ann)] = merged.lines
+  ext.module |> should.equal("gleam/httpc")
+  ann.effects |> should.equal(set.from_list(["Stdout"]))
 }

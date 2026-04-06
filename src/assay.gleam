@@ -259,7 +259,10 @@ fn check_file(
   )
   let check_annotations = annotation.extract_checks(assay_file)
   let type_fields = annotation.extract_type_fields(assay_file)
-  let kb = effects.with_type_fields(knowledge_base, type_fields)
+  let externs = annotation.extract_externs(assay_file)
+  let kb =
+    effects.with_type_fields(knowledge_base, type_fields)
+    |> effects.with_externs(externs)
 
   use module <- result.try(read_and_parse_gleam(gleam_path))
 
