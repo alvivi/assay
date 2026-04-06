@@ -216,13 +216,15 @@ Unlike effect checking (which walks the call graph), privacy checking requires *
 
 ## What assay implements today
 
-Assay v0.1.0 implements **effect checking**:
+Assay implements **effect checking** with higher-order and type-aware resolution:
 
 - Effects are sets of string labels
 - Composition is set union
 - Checking is subset inclusion
-- Transitive analysis follows local calls
+- Transitive analysis follows local calls with cycle detection
 - Knowledge base maps external functions to their effect sets
+- **Parameter bounds** for higher-order functions: `effects apply(f: [Stdout]) : [Stdout]` — calls to bounded parameters use the declared effect set
+- **Type field annotations**: `type Handler.on_click : [Dom]` — field access calls on typed parameters resolve effects via the type field registry
 
 Privacy checking is the planned next step — it introduces a new algebra (lattices) and a new analysis mode (data flow) while reusing the existing AST infrastructure.
 
