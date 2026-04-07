@@ -1,3 +1,24 @@
+//// Effect checker for Gleam via sidecar `.graded` annotation files.
+////
+//// graded verifies that your Gleam functions respect their declared effect
+//// budgets. Annotations live in `.graded` sidecar files alongside your source
+//// — your Gleam code stays clean.
+////
+//// ## Usage
+////
+//// ```sh
+//// gleam run -m graded check [directory]   # enforce check annotations (default)
+//// gleam run -m graded infer [directory]   # infer and write effect annotations
+//// gleam run -m graded format [directory]  # normalize .graded file formatting
+//// ```
+////
+//// ## Programmatic API
+////
+//// Use `run` to check a directory and get back a list of `CheckResult` values,
+//// each containing any violations found per file. Use `run_infer` to infer
+//// effects and write `.graded` files.
+////
+
 import argv
 import filepath
 import glance
@@ -17,13 +38,21 @@ import graded/internal/types.{
 import simplifile
 import stdin
 
+/// Errors that can occur during checking, inference, or formatting.
 pub type GradedError {
+  /// Could not read the source directory.
   DirectoryReadError(path: String, cause: simplifile.FileError)
+  /// Could not read a source or annotation file.
   FileReadError(path: String, cause: simplifile.FileError)
+  /// Could not write an annotation file.
   FileWriteError(path: String, cause: simplifile.FileError)
+  /// Could not create the output directory for annotation files.
   DirectoryCreateError(path: String, cause: simplifile.FileError)
+  /// A `.gleam` source file could not be parsed.
   GleamParseError(path: String, cause: glance.Error)
+  /// A `.graded` annotation file could not be parsed.
   GradedParseError(path: String, cause: annotation.ParseError)
+  /// One or more `.graded` files are not formatted (returned by `run_format_check`).
   FormatCheckFailed(paths: List(String))
 }
 
