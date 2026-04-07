@@ -331,7 +331,7 @@ fn resolve_catalog_files(
   })
 }
 
-fn pick_best_version(
+pub fn pick_best_version(
   versions: List(#(#(Int, Int, Int), String)),
   installed: #(Int, Int, Int),
 ) -> Result(String, Nil) {
@@ -352,7 +352,7 @@ fn pick_best_version(
   }
 }
 
-fn parse_semver(version: String) -> #(Int, Int, Int) {
+pub fn parse_semver(version: String) -> #(Int, Int, Int) {
   case string.split(version, ".") {
     [major, minor, patch] -> #(
       int.parse(major) |> result.unwrap(0),
@@ -368,11 +368,11 @@ fn parse_semver(version: String) -> #(Int, Int, Int) {
   }
 }
 
-fn semver_lte(left: #(Int, Int, Int), right: #(Int, Int, Int)) -> Bool {
+pub fn semver_lte(left: #(Int, Int, Int), right: #(Int, Int, Int)) -> Bool {
   compare_semver(left, right) != order.Gt
 }
 
-fn compare_semver(
+pub fn compare_semver(
   left: #(Int, Int, Int),
   right: #(Int, Int, Int),
 ) -> order.Order {
