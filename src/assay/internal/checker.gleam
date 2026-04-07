@@ -3,7 +3,7 @@ import assay/internal/extract.{type ImportContext}
 import assay/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, EffectAnnotation, Effects, QualifiedName,
-  Violation, empty, from_labels, is_subset, union,
+  Violation,
 }
 import glance.{type Definition, type Function, type Module}
 import gleam/dict
@@ -63,8 +63,8 @@ pub fn infer(
         param_bounds,
       )
     let effect_set =
-      list.fold(all_effects, empty(), fn(combined, pair) {
-        union(combined, pair.1)
+      list.fold(all_effects, types.empty(), fn(combined, pair) {
+        types.union(combined, pair.1)
       })
     EffectAnnotation(
       kind: Effects,
@@ -108,7 +108,7 @@ fn check_annotation(
       body_effects
       |> list.filter(fn(pair) {
         let #(_, call_effects) = pair
-        !is_subset(call_effects, annotation.effects)
+        !types.is_subset(call_effects, annotation.effects)
       })
       |> list.map(fn(pair) {
         let #(call, call_effects) = pair
@@ -216,7 +216,7 @@ fn resolve_unknown_local(
               ),
               span: local_call.span,
             )
-          [#(synthetic_call, from_labels(["Unknown"]))]
+          [#(synthetic_call, types.from_labels(["Unknown"]))]
         }
         Ok(local_definition) -> {
           let new_visited = set.insert(visited, local_call.function)
@@ -238,7 +238,7 @@ fn resolve_field_call(
   function: Function,
   knowledge_base: KnowledgeBase,
 ) -> EffectSet {
-  let unknown = from_labels(["Unknown"])
+  let unknown = types.from_labels(["Unknown"])
   let param =
     list.find(function.parameters, fn(param) {
       case param.name {

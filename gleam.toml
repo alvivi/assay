@@ -23,6 +23,7 @@ tom = ">= 2.0.2 and < 3.0.0"
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 glinter = ">= 2.11.1 and < 3.0.0"
+qcheck = ">= 1.0.0 and < 2.0.0"
 
 [tools.glinter.rules]
 unused_exports = "off"

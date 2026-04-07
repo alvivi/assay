@@ -2,8 +2,7 @@ import assay/internal/annotation
 import assay/internal/types.{
   type EffectAnnotation, type EffectSet, type ExternalAnnotation,
   type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard, empty,
-  from_labels,
+  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
 }
 import gleam/dict.{type Dict}
 import gleam/int
@@ -133,7 +132,7 @@ pub fn lookup(
     Ok(effect_set) -> Known(effect_set)
     Error(Nil) ->
       case set.contains(knowledge_base.pure_modules, name.module) {
-        True -> Known(empty())
+        True -> Known(types.empty())
         False -> Unknown
       }
   }
@@ -146,7 +145,7 @@ pub fn lookup_effects(
 ) -> EffectSet {
   case lookup(knowledge_base, name) {
     Known(effect_set) -> effect_set
-    Unknown -> from_labels(["Unknown"])
+    Unknown -> types.from_labels(["Unknown"])
   }
 }
 
