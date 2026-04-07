@@ -25,6 +25,7 @@ pub type ExtractResult {
     resolved: List(ResolvedCall),
     local: List(LocalCall),
     field: List(FieldCall),
+    references: List(ResolvedCall),
   )
 }
 
@@ -136,11 +137,17 @@ fn extract_from_expression(
             ],
             local: [],
             field: [],
+            references: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [], field: [
-            FieldCall(alias, function_name, span),
-          ])
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [
+              FieldCall(alias, function_name, span),
+            ],
+            references: [],
+          )
       }
       merge(call_result, extract_from_arguments(arguments, context))
     }
@@ -153,9 +160,15 @@ fn extract_from_expression(
             resolved: [ResolvedCall(qualified_name, span)],
             local: [],
             field: [],
+            references: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(name, span)], field: [])
+          ExtractResult(
+            resolved: [],
+            local: [LocalCall(name, span)],
+            field: [],
+            references: [],
+          )
       }
       merge(call_result, extract_from_arguments(arguments, context))
     }
@@ -210,7 +223,21 @@ fn extract_from_expression(
     // Record update
     glance.RecordUpdate(record:, ..) -> extract_from_expression(record, context)
 
-    // Field access (not a call — just traversing)
+    // Function reference: qualified name used as a value (not called)
+    glance.FieldAccess(
+      location: span,
+      container: glance.Variable(_, alias),
+      label: function_name,
+    ) ->
+      case dict.get(context.aliases, alias) {
+        Ok(module_path) ->
+          ExtractResult(resolved: [], local: [], field: [], references: [
+            ResolvedCall(QualifiedName(module_path, function_name), span),
+          ])
+        Error(Nil) -> empty()
+      }
+
+    // Other field access (not a call — just traversing)
     glance.FieldAccess(container:, ..) ->
       extract_from_expression(container, context)
 
@@ -237,11 +264,20 @@ fn extract_from_expression(
       extract_from_expression(inner, context)
     glance.Echo(expression: None, ..) -> empty()
 
+    // Unqualified function reference used as a value (not called)
+    glance.Variable(location: span, name:) ->
+      case dict.get(context.unqualified, name) {
+        Ok(qualified_name) ->
+          ExtractResult(resolved: [], local: [], field: [], references: [
+            ResolvedCall(qualified_name, span),
+          ])
+        Error(Nil) -> empty()
+      }
+
     // Leaf nodes
     glance.Int(..)
     | glance.Float(..)
     | glance.String(..)
-    | glance.Variable(..)
     | glance.Panic(..)
     | glance.Todo(..)
     | glance.BitString(..) -> empty()
@@ -266,11 +302,17 @@ fn extract_pipe_target(
             ],
             local: [],
             field: [],
+            references: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [], field: [
-            FieldCall(alias, function_name, span),
-          ])
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [
+              FieldCall(alias, function_name, span),
+            ],
+            references: [],
+          )
       }
 
     glance.Variable(location: span, name:) ->
@@ -280,9 +322,15 @@ fn extract_pipe_target(
             resolved: [ResolvedCall(qualified_name, span)],
             local: [],
             field: [],
+            references: [],
           )
         Error(Nil) ->
-          ExtractResult(resolved: [], local: [LocalCall(name, span)], field: [])
+          ExtractResult(
+            resolved: [],
+            local: [LocalCall(name, span)],
+            field: [],
+            references: [],
+          )
       }
 
     // Call with extra args or other expression — handle normally
@@ -337,7 +385,7 @@ fn merge_optional(
 }
 
 fn empty() -> ExtractResult {
-  ExtractResult(resolved: [], local: [], field: [])
+  ExtractResult(resolved: [], local: [], field: [], references: [])
 }
 
 fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
@@ -345,5 +393,6 @@ fn merge(left: ExtractResult, right: ExtractResult) -> ExtractResult {
     resolved: list.append(left.resolved, right.resolved),
     local: list.append(left.local, right.local),
     field: list.append(left.field, right.field),
+    references: list.append(left.references, right.references),
   )
 }

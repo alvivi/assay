@@ -131,7 +131,22 @@ pub type Violation {
   )
 }
 
+/// A warning about a function reference passed as a value whose effects
+/// won't be tracked through the callee.
+pub type Warning {
+  UntrackedEffectWarning(
+    function: String,
+    reference: QualifiedName,
+    span: Span,
+    effects: EffectSet,
+  )
+}
+
 /// Result of checking one file.
 pub type CheckResult {
-  CheckResult(file: String, violations: List(Violation))
+  CheckResult(
+    file: String,
+    violations: List(Violation),
+    warnings: List(Warning),
+  )
 }

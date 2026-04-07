@@ -3,8 +3,8 @@ import assay/internal/annotation
 import assay/internal/checker
 import assay/internal/effects.{type KnowledgeBase}
 import assay/internal/types.{
-  type AssayFile, type CheckResult, type Violation, AnnotationLine, AssayFile,
-  CheckResult,
+  type AssayFile, type CheckResult, type Violation, type Warning, AnnotationLine,
+  AssayFile, CheckResult,
 }
 import filepath
 import glance
@@ -245,10 +245,20 @@ fn run_check(directory: String) -> Nil {
     Ok(results) -> {
       let violations =
         list.flat_map(results, fn(check_result) { check_result.violations })
+      let warnings =
+        list.flat_map(results, fn(check_result) { check_result.warnings })
+      list.each(results, print_warnings)
+      case warnings {
+        [] -> Nil
+        _ ->
+          io.println(
+            "assay: " <> int.to_string(list.length(warnings)) <> " warning(s)",
+          )
+      }
       case violations {
         [] -> io.println("assay: all checks passed")
         _ -> {
-          list.each(results, print_result)
+          list.each(results, print_violations)
           io.println(
             "\nassay: "
             <> int.to_string(list.length(violations))
@@ -294,8 +304,9 @@ fn check_file(
 
   use module <- result.try(read_and_parse_gleam(gleam_path))
 
-  let violations = checker.check(module, check_annotations, knowledge_base)
-  Ok(CheckResult(file: gleam_path, violations:))
+  let #(violations, warnings) =
+    checker.check(module, check_annotations, knowledge_base)
+  Ok(CheckResult(file: gleam_path, violations:, warnings:))
 }
 
 fn write_assay_file(
@@ -320,7 +331,7 @@ fn format_error(error: AssayError) -> String {
   }
 }
 
-fn print_result(check_result: CheckResult) -> Nil {
+fn print_violations(check_result: CheckResult) -> Nil {
   list.each(check_result.violations, fn(violation) {
     print_violation(check_result.file, violation)
   })
@@ -339,6 +350,27 @@ fn print_violation(file: String, violation: Violation) -> Nil {
     <> effects.format_effect_set(violation.actual)
     <> " but declared "
     <> effects.format_effect_set(violation.declared),
+  )
+}
+
+fn print_warnings(check_result: CheckResult) -> Nil {
+  list.each(check_result.warnings, fn(warning) {
+    print_warning(check_result.file, warning)
+  })
+}
+
+fn print_warning(file: String, warning: Warning) -> Nil {
+  io.println(
+    file
+    <> ": warning: "
+    <> warning.function
+    <> " passes "
+    <> warning.reference.module
+    <> "."
+    <> warning.reference.function
+    <> " as a value — its effects "
+    <> effects.format_effect_set(warning.effects)
+    <> " won't be tracked",
   )
 }
 

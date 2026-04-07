@@ -2,8 +2,8 @@ import assay/internal/effects.{type KnowledgeBase}
 import assay/internal/extract.{type ImportContext}
 import assay/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
-  type ResolvedCall, type Violation, EffectAnnotation, Effects, QualifiedName,
-  Violation,
+  type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
+  QualifiedName, UntrackedEffectWarning, Violation,
 }
 import glance.{type Definition, type Function, type Module}
 import gleam/dict
@@ -17,13 +17,17 @@ pub fn check(
   module: Module,
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
-) -> List(Violation) {
+) -> #(List(Violation), List(Warning)) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
 
-  list.flat_map(annotations, fn(annotation) {
-    check_annotation(annotation, function_map, context, knowledge_base)
-  })
+  let results =
+    list.map(annotations, fn(annotation) {
+      check_annotation(annotation, function_map, context, knowledge_base)
+    })
+  let violations = list.flat_map(results, fn(r) { r.0 })
+  let warnings = list.flat_map(results, fn(r) { r.1 })
+  #(violations, warnings)
 }
 
 /// Infer the effect set for every public function in a module.
@@ -88,11 +92,11 @@ fn check_annotation(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-) -> List(Violation) {
+) -> #(List(Violation), List(Warning)) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
     // build target. Missing functions are not an error.
-    Error(Nil) -> []
+    Error(Nil) -> #([], [])
     Ok(function_definition) -> {
       let body_effects =
         collect_effects(
@@ -105,21 +109,45 @@ fn check_annotation(
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
-      body_effects
-      |> list.filter(fn(pair) {
-        let #(_, call_effects) = pair
-        !types.is_subset(call_effects, annotation.effects)
-      })
-      |> list.map(fn(pair) {
-        let #(call, call_effects) = pair
-        Violation(
-          function: annotation.function,
-          call: call.name,
-          span: call.span,
-          declared: annotation.effects,
-          actual: call_effects,
-        )
-      })
+      let violations =
+        body_effects
+        |> list.filter(fn(pair) {
+          let #(_, call_effects) = pair
+          !types.is_subset(call_effects, annotation.effects)
+        })
+        |> list.map(fn(pair) {
+          let #(call, call_effects) = pair
+          Violation(
+            function: annotation.function,
+            call: call.name,
+            span: call.span,
+            declared: annotation.effects,
+            actual: call_effects,
+          )
+        })
+
+      // Warn about function references passed as values with known non-pure effects.
+      let extract_result =
+        extract.extract_calls(function_definition.definition.body, context)
+      let warnings =
+        list.filter_map(extract_result.references, fn(ref) {
+          case effects.lookup(knowledge_base, ref.name) {
+            effects.Known(effect_set) ->
+              case effect_set == types.empty() {
+                True -> Error(Nil)
+                False ->
+                  Ok(UntrackedEffectWarning(
+                    function: annotation.function,
+                    reference: ref.name,
+                    span: ref.span,
+                    effects: effect_set,
+                  ))
+              }
+            effects.Unknown -> Error(Nil)
+          }
+        })
+
+      #(violations, warnings)
     }
   }
 }

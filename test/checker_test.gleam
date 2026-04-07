@@ -2,7 +2,7 @@ import assay/internal/checker
 import assay/internal/effects
 import assay/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, QualifiedName, Specific, Wildcard,
+  ParamBound, QualifiedName, Specific, UntrackedEffectWarning, Wildcard,
 }
 import generators
 import glance
@@ -23,7 +23,9 @@ fn check_source(
   annotations: List(EffectAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  checker.check(module, annotations, knowledge_base())
+  let #(violations, _warnings) =
+    checker.check(module, annotations, knowledge_base())
+  violations
 }
 
 pub fn pure_function_passes_test() {
@@ -267,7 +269,8 @@ fn check_source_with_type_fields(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_type_fields(knowledge_base(), type_fields)
-  checker.check(module, annotations, kb)
+  let #(violations, _warnings) = checker.check(module, annotations, kb)
+  violations
 }
 
 // Typed param + registry entry → effects resolve correctly
@@ -329,7 +332,8 @@ fn check_source_with_externals(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_externals(knowledge_base(), externals)
-  checker.check(module, annotations, kb)
+  let #(violations, _warnings) = checker.check(module, annotations, kb)
+  violations
 }
 
 // External resolves instead of Unknown
@@ -398,6 +402,93 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
+}
+
+// ──── Function Reference Warnings ────
+
+fn check_warnings(
+  source: String,
+  annotations: List(EffectAnnotation),
+) -> List(types.Warning) {
+  let assert Ok(module) = glance.module(source)
+  let #(_violations, warnings) =
+    checker.check(module, annotations, knowledge_base())
+  warnings
+}
+
+// Qualified function reference passed as value emits warning
+pub fn function_ref_qualified_warns_test() {
+  let source =
+    "import gleam/io
+import gleam/list
+pub fn greet_all(names) { list.map(names, io.println) }"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+    ])
+  warnings |> list.length() |> should.equal(1)
+  let assert [warning] = warnings
+  let UntrackedEffectWarning(function:, reference:, effects:, ..) = warning
+  function |> should.equal("greet_all")
+  reference |> should.equal(QualifiedName("gleam/io", "println"))
+  effects |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+// Unqualified function reference passed as value emits warning
+pub fn function_ref_unqualified_warns_test() {
+  let source =
+    "import gleam/io.{println}
+import gleam/list
+pub fn greet_all(names) { list.map(names, println) }"
+  let warnings =
+    check_warnings(source, [
+      EffectAnnotation(Check, "greet_all", [], Specific(set.new())),
+    ])
+  warnings |> list.length() |> should.equal(1)
+  let assert [warning] = warnings
+  let UntrackedEffectWarning(reference:, ..) = warning
+  reference |> should.equal(QualifiedName("gleam/io", "println"))
+}
+
+// Pure function reference does not emit warning
+pub fn function_ref_pure_no_warning_test() {
+  let source =
+    "import gleam/list
+import gleam/string
+pub fn upper_all(items) { list.map(items, string.uppercase) }"
+  check_warnings(source, [
+    EffectAnnotation(Check, "upper_all", [], Specific(set.new())),
+  ])
+  |> should.equal([])
+}
+
+// Unknown function reference does not emit warning
+pub fn function_ref_unknown_no_warning_test() {
+  let source =
+    "import some/unknown
+import gleam/list
+pub fn run(items) { list.map(items, unknown.do_thing) }"
+  check_warnings(source, [
+    EffectAnnotation(Check, "run", [], Specific(set.new())),
+  ])
+  |> should.equal([])
+}
+
+// Inline closure does not emit warning (effects tracked normally)
+pub fn inline_closure_no_warning_test() {
+  let source =
+    "import gleam/io
+import gleam/list
+pub fn greet_all(names) { list.map(names, fn(n) { io.println(n) }) }"
+  check_warnings(source, [
+    EffectAnnotation(
+      Check,
+      "greet_all",
+      [],
+      Specific(set.from_list(["Stdout"])),
+    ),
+  ])
+  |> should.equal([])
 }
 
 // ──── Checker Soundness (property) ────
@@ -476,7 +567,8 @@ pub fn check_no_false_positives_test() {
       let kb = build_kb(calls)
       let declared = actual_effects(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], declared)
-      checker.check(module, [ann], kb) |> should.equal([])
+      let #(violations, _) = checker.check(module, [ann], kb)
+      violations |> should.equal([])
     }
   }
 }
@@ -489,7 +581,8 @@ pub fn check_wildcard_never_violates_test() {
     Ok(module) -> {
       let kb = build_kb(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], Wildcard)
-      checker.check(module, [ann], kb) |> should.equal([])
+      let #(violations, _) = checker.check(module, [ann], kb)
+      violations |> should.equal([])
     }
   }
 }
@@ -505,7 +598,7 @@ pub fn check_empty_budget_detects_effects_test() {
         Ok(module) -> {
           let kb = build_kb(calls)
           let ann = EffectAnnotation(Check, "test_fn", [], types.empty())
-          let violations = checker.check(module, [ann], kb)
+          let #(violations, _) = checker.check(module, [ann], kb)
           { violations != [] } |> should.be_true()
         }
       }
@@ -524,7 +617,7 @@ pub fn check_violations_iff_not_subset_test() {
     Ok(module) -> {
       let kb = build_kb(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], declared)
-      let violations = checker.check(module, [ann], kb)
+      let #(violations, _) = checker.check(module, [ann], kb)
       let has_violations = violations != []
       let actual = actual_effects(calls)
       let not_subset = !types.is_subset(actual, declared)
@@ -617,7 +710,7 @@ pub fn check_terminates_with_cycles_test() {
     Error(_) -> Nil
     Ok(module) -> {
       let ann = EffectAnnotation(Check, "a", [], types.empty())
-      let violations = checker.check(module, [ann], bare_knowledge_base())
+      let #(violations, _) = checker.check(module, [ann], bare_knowledge_base())
       violations |> should.equal([])
     }
   }
