@@ -1,6 +1,6 @@
-import assay/effects.{type KnowledgeBase}
-import assay/extract.{type ImportContext}
-import assay/types.{
+import assay/internal/effects.{type KnowledgeBase}
+import assay/internal/extract.{type ImportContext}
+import assay/internal/types.{
   type EffectAnnotation, type LocalCall, type ParamBound, type ResolvedCall,
   type Violation, EffectAnnotation, Effects, QualifiedName, Violation,
 }

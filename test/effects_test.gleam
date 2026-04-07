@@ -1,5 +1,5 @@
-import assay/effects
-import assay/types.{QualifiedName}
+import assay/internal/effects
+import assay/internal/types.{QualifiedName}
 import gleam/set
 import gleeunit/should
 

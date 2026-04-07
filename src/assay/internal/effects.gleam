@@ -1,5 +1,5 @@
-import assay/annotation
-import assay/types.{
+import assay/internal/annotation
+import assay/internal/types.{
   type EffectAnnotation, type ExternAnnotation, type ParamBound,
   type QualifiedName, type TypeFieldAnnotation, Check, Effects, FunctionExtern,
   ModuleExtern, QualifiedName,

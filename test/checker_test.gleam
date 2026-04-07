@@ -1,6 +1,6 @@
-import assay/checker
-import assay/effects
-import assay/types.{
+import assay/internal/checker
+import assay/internal/effects
+import assay/internal/types.{
   type EffectAnnotation, Check, EffectAnnotation, Effects, ParamBound,
   QualifiedName,
 }

@@ -1,4 +1,4 @@
-import assay/annotation
+import assay/internal/annotation
 import gleeunit/should
 
 pub fn sorts_check_before_effects_test() {

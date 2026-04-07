@@ -1,5 +1,5 @@
 import assay
-import assay/annotation
+import assay/internal/annotation
 import gleam/list
 import gleeunit/should
 import simplifile

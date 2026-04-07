@@ -1,8 +1,8 @@
 import argv
-import assay/annotation
-import assay/checker
-import assay/effects.{type KnowledgeBase}
-import assay/types.{
+import assay/internal/annotation
+import assay/internal/checker
+import assay/internal/effects.{type KnowledgeBase}
+import assay/internal/types.{
   type AssayFile, type CheckResult, type Violation, AnnotationLine, AssayFile,
   CheckResult,
 }
