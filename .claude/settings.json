@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -q '\\.gleam$' && gleam format \"$f\"; } 2>/dev/null || true",
+            "statusMessage": "Formatting..."
+          },
+          {
+            "type": "command",
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath' | { read -r f; echo \"$f\" | grep -q '\\.gleam$' && gleam run -m glinter 2>&1; } 2>/dev/null || true",
+            "statusMessage": "Linting..."
+          }
+        ]
+      }
+    ]
+  }
+}
