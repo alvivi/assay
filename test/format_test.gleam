@@ -1,41 +1,13 @@
 import assay/internal/annotation
+import assay/internal/types.{
+  AnnotationLine, BlankLine, Check, CommentLine, Effects, ExternalLine,
+  TypeFieldLine,
+}
+import generators
+import gleam/list
+import gleam/string
 import gleeunit/should
-
-pub fn sorts_check_before_effects_test() {
-  let input =
-    "effects update : [Http]
-check view : []
-effects view : []
-check update : [Http]"
-  let assert Ok(file) = annotation.parse_file(input)
-  annotation.format_sorted(file)
-  |> should.equal(
-    "check update : [Http]
-check view : []
-
-effects update : [Http]
-effects view : []
-",
-  )
-}
-
-pub fn alphabetical_within_groups_test() {
-  let input =
-    "effects zebra : []
-effects alpha : [Stdout]
-check zebra : []
-check alpha : []"
-  let assert Ok(file) = annotation.parse_file(input)
-  annotation.format_sorted(file)
-  |> should.equal(
-    "check alpha : []
-check zebra : []
-
-effects alpha : [Stdout]
-effects zebra : []
-",
-  )
-}
+import qcheck
 
 pub fn preserves_comments_test() {
   let input =
@@ -86,7 +58,6 @@ pub fn empty_file_test() {
 }
 
 pub fn normalizes_spacing_test() {
-  // Parser already normalizes spacing, so parse + format_sorted cleans up
   let input = "effects   view  :  [ Http ,  Dom ]"
   let assert Ok(file) = annotation.parse_file(input)
   annotation.format_sorted(file)
@@ -98,4 +69,69 @@ pub fn sorts_effect_labels_test() {
   let assert Ok(file) = annotation.parse_file(input)
   annotation.format_sorted(file)
   |> should.equal("effects handler : [Db, Http, Stdout]\n")
+}
+
+// ──── format_sorted Ordering Invariants (property) ────
+
+pub fn format_sorted_section_order_test() {
+  use file <- qcheck.given(generators.assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let indices =
+    parsed.lines
+    |> list.filter(fn(line) { line != BlankLine })
+    |> list.map(section_index)
+  check_non_decreasing(indices)
+}
+
+fn section_index(line: types.AssayLine) -> Int {
+  case line {
+    CommentLine(_) -> 0
+    ExternalLine(_) -> 1
+    TypeFieldLine(_) -> 2
+    AnnotationLine(a) ->
+      case a.kind {
+        Check -> 3
+        Effects -> 4
+      }
+    BlankLine -> -1
+  }
+}
+
+fn check_non_decreasing(xs: List(Int)) -> Nil {
+  case xs {
+    [] | [_] -> Nil
+    [a, b, ..rest] -> {
+      { a <= b } |> should.be_true()
+      check_non_decreasing([b, ..rest])
+    }
+  }
+}
+
+pub fn format_sorted_checks_alphabetical_test() {
+  use file <- qcheck.given(generators.assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let check_names =
+    annotation.extract_annotations(parsed)
+    |> list.filter(fn(a) { a.kind == Check })
+    |> list.map(fn(a) { a.function })
+  check_names |> should.equal(list.sort(check_names, string.compare))
+}
+
+pub fn format_sorted_effects_alphabetical_test() {
+  use file <- qcheck.given(generators.assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  let assert Ok(parsed) = annotation.parse_file(sorted)
+  let effects_names =
+    annotation.extract_annotations(parsed)
+    |> list.filter(fn(a) { a.kind == Effects })
+    |> list.map(fn(a) { a.function })
+  effects_names |> should.equal(list.sort(effects_names, string.compare))
+}
+
+pub fn format_sorted_trailing_newline_test() {
+  use file <- qcheck.given(generators.assay_file_gen())
+  let sorted = annotation.format_sorted(file)
+  string.ends_with(sorted, "\n") |> should.be_true()
 }

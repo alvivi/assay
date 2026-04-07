@@ -1,13 +1,18 @@
 import assay/internal/checker
 import assay/internal/effects
 import assay/internal/types.{
-  type EffectAnnotation, Check, EffectAnnotation, Effects, ParamBound,
-  QualifiedName, Specific, Wildcard,
+  type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
+  ParamBound, QualifiedName, Specific, Wildcard,
 }
+import generators
 import glance
+import gleam/dict
 import gleam/list
+import gleam/result
 import gleam/set
+import gleam/string
 import gleeunit/should
+import qcheck
 
 fn knowledge_base() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
@@ -111,16 +116,6 @@ pub fn view(items) {
       EffectAnnotation(Check, "view", [], Specific(set.new())),
     ])
   { violations != [] } |> should.be_true()
-}
-
-pub fn mutual_recursion_cycle_test() {
-  let source =
-    "pub fn a() { b() }
-fn b() { a() }"
-  let violations =
-    check_source(source, [EffectAnnotation(Check, "a", [], Specific(set.new()))])
-  // Should not infinite loop. Both are local with no external calls, so pure.
-  violations |> should.equal([])
 }
 
 pub fn unknown_local_function_test() {
@@ -403,4 +398,227 @@ pub fn wildcard_param_bound_in_pure_function_violates_test() {
   check_source(source, [annotation])
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
+}
+
+// ──── Checker Soundness (property) ────
+
+const call_pool = [
+  #("mod_a", "call_http", "Http"),
+  #("mod_b", "call_dom", "Dom"),
+  #("mod_c", "call_stdout", "Stdout"),
+  #("mod_d", "call_db", "Db"),
+  #("mod_e", "call_fs", "FileSystem"),
+]
+
+fn call_selection_gen() -> qcheck.Generator(List(Bool)) {
+  qcheck.fixed_length_list_from(qcheck.bool(), list.length(call_pool))
+}
+
+fn selected_calls(selections: List(Bool)) -> List(#(String, String, String)) {
+  list.zip(call_pool, selections)
+  |> list.filter_map(fn(pair) {
+    case pair.1 {
+      True -> Ok(pair.0)
+      False -> Error(Nil)
+    }
+  })
+}
+
+fn build_module(
+  calls: List(#(String, String, String)),
+) -> Result(glance.Module, Nil) {
+  let modules =
+    calls
+    |> list.map(fn(c) { c.0 })
+    |> list.unique()
+    |> list.sort(string.compare)
+  let imports =
+    modules |> list.map(fn(m) { "import " <> m }) |> string.join("\n")
+  let body = case calls {
+    [] -> "  Nil"
+    _ ->
+      calls
+      |> list.map(fn(c) { "  " <> c.0 <> "." <> c.1 <> "()" })
+      |> string.join("\n")
+  }
+  let source = imports <> "\npub fn test_fn() {\n" <> body <> "\n}\n"
+  glance.module(source) |> result.replace_error(Nil)
+}
+
+fn build_kb(calls: List(#(String, String, String))) -> effects.KnowledgeBase {
+  let all_effects =
+    calls
+    |> list.map(fn(c) {
+      #(
+        types.QualifiedName(module: c.0, function: c.1),
+        types.from_labels([c.2]),
+      )
+    })
+    |> dict.from_list()
+  effects.KnowledgeBase(
+    all_effects:,
+    param_bounds: dict.new(),
+    type_fields: dict.new(),
+    pure_modules: set.new(),
+  )
+}
+
+fn actual_effects(calls: List(#(String, String, String))) -> EffectSet {
+  calls |> list.map(fn(c) { c.2 }) |> types.from_labels()
+}
+
+pub fn check_no_false_positives_test() {
+  use selections <- qcheck.given(call_selection_gen())
+  let calls = selected_calls(selections)
+  case build_module(calls) {
+    Error(Nil) -> Nil
+    Ok(module) -> {
+      let kb = build_kb(calls)
+      let declared = actual_effects(calls)
+      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      checker.check(module, [ann], kb) |> should.equal([])
+    }
+  }
+}
+
+pub fn check_wildcard_never_violates_test() {
+  use selections <- qcheck.given(call_selection_gen())
+  let calls = selected_calls(selections)
+  case build_module(calls) {
+    Error(Nil) -> Nil
+    Ok(module) -> {
+      let kb = build_kb(calls)
+      let ann = EffectAnnotation(Check, "test_fn", [], Wildcard)
+      checker.check(module, [ann], kb) |> should.equal([])
+    }
+  }
+}
+
+pub fn check_empty_budget_detects_effects_test() {
+  use selections <- qcheck.given(call_selection_gen())
+  let calls = selected_calls(selections)
+  case calls {
+    [] -> Nil
+    _ ->
+      case build_module(calls) {
+        Error(Nil) -> Nil
+        Ok(module) -> {
+          let kb = build_kb(calls)
+          let ann = EffectAnnotation(Check, "test_fn", [], types.empty())
+          let violations = checker.check(module, [ann], kb)
+          { violations != [] } |> should.be_true()
+        }
+      }
+  }
+}
+
+pub fn check_violations_iff_not_subset_test() {
+  use #(selections, declared) <- qcheck.given(
+    qcheck.map2(call_selection_gen(), generators.effect_set_gen(), fn(s, d) {
+      #(s, d)
+    }),
+  )
+  let calls = selected_calls(selections)
+  case build_module(calls) {
+    Error(Nil) -> Nil
+    Ok(module) -> {
+      let kb = build_kb(calls)
+      let ann = EffectAnnotation(Check, "test_fn", [], declared)
+      let violations = checker.check(module, [ann], kb)
+      let has_violations = violations != []
+      let actual = actual_effects(calls)
+      let not_subset = !types.is_subset(actual, declared)
+      has_violations |> should.equal(not_subset)
+    }
+  }
+}
+
+pub fn infer_matches_actual_effects_test() {
+  use selections <- qcheck.given(call_selection_gen())
+  let calls = selected_calls(selections)
+  case build_module(calls) {
+    Error(Nil) -> Nil
+    Ok(module) -> {
+      let kb = build_kb(calls)
+      let inferred = checker.infer(module, kb, [])
+      let assert [ann] = inferred
+      ann.function |> should.equal("test_fn")
+      ann.effects |> should.equal(actual_effects(calls))
+    }
+  }
+}
+
+// ──── Cycle Detection (property) ────
+
+fn cycle_graph_gen() -> qcheck.Generator(List(#(String, List(String)))) {
+  let names = ["a", "b", "c", "d"]
+  let callees_gen =
+    qcheck.map(
+      qcheck.fixed_length_list_from(qcheck.bool(), list.length(names)),
+      fn(bools) {
+        list.zip(names, bools)
+        |> list.filter_map(fn(pair) {
+          case pair.1 {
+            True -> Ok(pair.0)
+            False -> Error(Nil)
+          }
+        })
+      },
+    )
+  qcheck.map(
+    qcheck.fixed_length_list_from(callees_gen, list.length(names)),
+    fn(all_callees) { list.zip(names, all_callees) },
+  )
+}
+
+fn build_cycle_source(graph: List(#(String, List(String)))) -> String {
+  graph
+  |> list.index_map(fn(entry, i) {
+    let #(name, callees) = entry
+    let visibility = case i {
+      0 -> "pub "
+      _ -> ""
+    }
+    let body = case callees {
+      [] -> "  Nil"
+      cs -> cs |> list.map(fn(c) { "  " <> c <> "()" }) |> string.join("\n")
+    }
+    visibility <> "fn " <> name <> "() {\n" <> body <> "\n}"
+  })
+  |> string.join("\n")
+}
+
+fn bare_knowledge_base() -> effects.KnowledgeBase {
+  effects.KnowledgeBase(
+    all_effects: dict.new(),
+    param_bounds: dict.new(),
+    type_fields: dict.new(),
+    pure_modules: set.new(),
+  )
+}
+
+pub fn infer_terminates_with_cycles_test() {
+  use graph <- qcheck.given(cycle_graph_gen())
+  let source = build_cycle_source(graph)
+  case glance.module(source) {
+    Error(_) -> Nil
+    Ok(module) -> {
+      let inferred = checker.infer(module, bare_knowledge_base(), [])
+      let assert [ann] = inferred
+      ann.function |> should.equal("a")
+    }
+  }
+}
+
+pub fn check_terminates_with_cycles_test() {
+  use graph <- qcheck.given(cycle_graph_gen())
+  let source = build_cycle_source(graph)
+  case glance.module(source) {
+    Error(_) -> Nil
+    Ok(module) -> {
+      let ann = EffectAnnotation(Check, "a", [], types.empty())
+      let violations = checker.check(module, [ann], bare_knowledge_base())
+      violations |> should.equal([])
+    }
+  }
 }
