@@ -33,8 +33,8 @@ import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/types.{
-  type CheckResult, type GradedFile, type Violation, type Warning,
-  AnnotationLine, CheckResult, GradedFile, QualifiedName,
+  type CheckResult, type GradedFile, type QualifiedName, type Violation,
+  type Warning, AnnotationLine, CheckResult, GradedFile, QualifiedName,
 }
 import simplifile
 import stdin
@@ -232,8 +232,26 @@ pub fn gleam_to_graded_path(
 
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
-  let inferred =
-    list.fold(path_deps, dict.new(), fn(acc, dep) {
+  case path_deps {
+    [] -> knowledge_base
+    _ -> {
+      // Pass 1: infer with base KB, accumulating results across deps
+      let pass1 = infer_all_path_deps(path_deps, knowledge_base)
+      let enriched = effects.with_inferred(knowledge_base, pass1)
+      // Pass 2: re-infer with enriched KB so cross-dep calls resolve
+      let pass2 = infer_all_path_deps(path_deps, enriched)
+      effects.with_inferred(knowledge_base, pass2)
+    }
+  }
+}
+
+fn infer_all_path_deps(
+  path_deps: List(#(String, String)),
+  base_kb: KnowledgeBase,
+) -> dict.Dict(QualifiedName, types.EffectSet) {
+  let result =
+    list.fold(path_deps, #(dict.new(), base_kb), fn(state, dep) {
+      let #(all_inferred, kb) = state
       let #(_name, dep_path) = dep
       let source_dir = dep_path <> "/src"
       let gleam_files = case simplifile.get_files(source_dir) {
@@ -241,32 +259,57 @@ fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
           list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
         Error(_) -> []
       }
-      list.fold(gleam_files, acc, fn(inner_acc, gleam_path) {
-        case parse_gleam_silent(gleam_path) {
-          Error(Nil) -> inner_acc
-          Ok(module) -> {
-            let annotations = checker.infer(module, knowledge_base, [])
-            let prefix = source_dir <> "/"
-            let module_path = case string.starts_with(gleam_path, prefix) {
-              True -> string.drop_start(gleam_path, string.length(prefix))
-              False -> gleam_path
+      let dep_inferred =
+        list.fold(gleam_files, dict.new(), fn(acc, gleam_path) {
+          case parse_gleam_silent(gleam_path) {
+            Error(Nil) -> acc
+            Ok(module) -> {
+              let module_path = source_relative_module(gleam_path, source_dir)
+              let checks = load_path_dep_checks(dep_path, module_path)
+              let annotations = checker.infer(module, kb, checks)
+              list.fold(annotations, acc, fn(effect_acc, annotation) {
+                dict.insert(
+                  effect_acc,
+                  QualifiedName(
+                    module: module_path,
+                    function: annotation.function,
+                  ),
+                  annotation.effects,
+                )
+              })
             }
-            let module_path = string.replace(module_path, ".gleam", "")
-            list.fold(annotations, inner_acc, fn(effect_acc, annotation) {
-              dict.insert(
-                effect_acc,
-                QualifiedName(
-                  module: module_path,
-                  function: annotation.function,
-                ),
-                annotation.effects,
-              )
-            })
           }
-        }
-      })
+        })
+      #(
+        dict.merge(all_inferred, dep_inferred),
+        effects.with_inferred(kb, dep_inferred),
+      )
     })
-  effects.with_inferred(knowledge_base, inferred)
+  result.0
+}
+
+fn source_relative_module(gleam_path: String, source_dir: String) -> String {
+  let prefix = source_dir <> "/"
+  let relative = case string.starts_with(gleam_path, prefix) {
+    True -> string.drop_start(gleam_path, string.length(prefix))
+    False -> gleam_path
+  }
+  string.replace(relative, ".gleam", "")
+}
+
+fn load_path_dep_checks(
+  dep_path: String,
+  module_path: String,
+) -> List(types.EffectAnnotation) {
+  let graded_path = dep_path <> "/priv/graded/" <> module_path <> ".graded"
+  case simplifile.read(graded_path) {
+    Error(_) -> []
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Error(_) -> []
+        Ok(graded_file) -> annotation.extract_checks(graded_file)
+      }
+  }
 }
 
 fn parse_gleam_silent(path: String) -> Result(glance.Module, Nil) {
