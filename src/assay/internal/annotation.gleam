@@ -369,8 +369,8 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
   }
 }
 
-// No "." → module-level extern (e.g., `extern gleam/list : []`)
-// Has "." → function-level extern (e.g., `extern gleam/io.println : [Stdout]`)
+// No "." → module-level external (e.g., `external effects gleam/list : []`)
+// Has "." → function-level external (e.g., `external effects gleam/io.println : [Stdout]`)
 fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
   let segments = string.split(qualified, ".")
