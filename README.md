@@ -77,10 +77,11 @@ The checker walks the Gleam AST (via [glance](https://hexdocs.pm/glance/)), reso
 Effect knowledge is resolved in priority order:
 
 1. **Your `.graded` files** — `external effects` declarations you write for your project
-2. **Dependency `.graded` files** — shipped by libraries in `build/packages/*/priv/graded/`
-3. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml` are inferred from source automatically
-4. **Bundled catalog** — versioned catalog files shipped with graded (see below)
-5. **Conservative default** — unknown functions get `[Unknown]`
+2. **Project sibling modules** — inferred effects from other modules in the same project
+3. **Dependency `.graded` files** — shipped by libraries in `build/packages/*/priv/graded/`
+4. **Path dependencies** — local deps declared with `path = "..."` in `gleam.toml` are inferred from source automatically
+5. **Bundled catalog** — versioned catalog files shipped with graded (see below)
+6. **Conservative default** — unknown functions get `[Unknown]`
 
 ## Higher-order functions
 
@@ -117,36 +118,9 @@ external effects simplifile.read : [FileSystem]
 external effects gleam/otp/actor.start : [Process]
 ```
 
-Externals are merged into the knowledge base before both `infer` and `check`, so calls to these functions resolve with the declared effects instead of `[Unknown]`.
+Externals are merged into the knowledge base before both `infer` and `check`, so calls to these functions resolve with the declared effects instead of `[Unknown]`. This is also the right mechanism for **FFI functions** — declare their effects so callers propagate correctly.
 
-This is also the right mechanism for **FFI functions**. If your project has Erlang or JavaScript FFI implementations, the checker can't analyze the foreign code and will flag those calls as `[Unknown]`. Declare their effects with `external effects` in your `.graded` file:
-
-```
-// priv/graded/my_app.graded
-external effects my_app/native.hash_password : [Crypto]
-external effects my_app/native.read_env : [System]
-external effects my_app/native.pure_helper : []
-```
-
-Since externals are loaded before inference, `graded infer` will propagate the declared effects through callers correctly — no `[Unknown]` noise.
-
-## .graded file format
-
-```
-// Comments use Gleam-style //
-type Handler.on_click : [Dom]
-
-check render_page : []
-check handle_request : [Http, Stdout]
-check safe_map(f: []) : []
-
-effects render_page : []
-effects handle_request : [Http, Stdout]
-effects apply(f: [Stdout]) : [Stdout]
-```
-
-- `[]` means pure — no effects allowed
-- `[Http, Dom]` — these specific effects are permitted
+Effect sets use `[]` for pure (no effects) and `[Http, Dom]` for specific permitted effects.
 
 ## Effect labels
 
@@ -188,35 +162,15 @@ For example, if you have `gleam_stdlib@0.71.0` installed and the catalog has `gl
 | **gleam_stdlib** | `gleam/io.*` | `Stdout`, `Stderr` |
 | **gleam_erlang** | `gleam/erlang/process.*` | `Process`, `Stdin`, `FileSystem` |
 | **gleam_otp** | `gleam/otp/actor.*`, `gleam/otp/supervisor.*` | `Process` |
-| **gleam_http** | (pure) | — |
 | **gleam_httpc** | `gleam/httpc.send` | `Http` |
-| **gleam_json** | (pure) | — |
 | **lustre** | `lustre.start`, `lustre.send`, `lustre/server_component.*` | `Process`, `Dom` |
 | **lustre_http** | `lustre_http.*` | `Http` |
 | **simplifile** | `simplifile.*` | `FileSystem` |
-| **filepath** | (pure) | — |
-| **gleam_regexp** | (pure) | — |
-| **gleam_yielder** | (pure) | — |
-| **gleam_crypto** | (pure) | — |
 | **gleam_time** | `gleam/time/timestamp.system_time`, `gleam/time/calendar.local_offset`, `.utc_offset` | `Time` |
-| **houdini** | (pure) | — |
-| **tom** | (pure) | — |
 
-Module-level declarations like `external effects gleam/list : []` mark an entire module as pure — any function from that module resolves as effect-free.
+Pure (all functions `[]`): **gleam_http**, **gleam_json**, **filepath**, **gleam_regexp**, **gleam_yielder**, **gleam_crypto**, **houdini**, **tom**.
 
-### Adding your own catalog entries
-
-For packages not in the catalog, use `external effects` declarations in your project's `.graded` files:
-
-```
-// priv/graded/app.graded
-external effects some_package/module.function : [Http]
-external effects some_package/pure_module : []
-```
-
-### Contributing catalog files
-
-To add a new package to the bundled catalog, create `priv/catalog/{package}@{version}.graded` with `external effects` declarations for its modules and functions. Only one version file per package is needed — the version resolution algorithm handles older installations.
+For packages not in the catalog, use `external effects` declarations in your project's `.graded` files.
 
 ## Commands
 
@@ -228,22 +182,6 @@ gleam run -m graded format --check [directory] # verify formatting (CI mode)
 gleam run -m graded format --stdin            # format from stdin (editor integration)
 ```
 
-## Current scope
-
-The effect checker handles:
-
-- Qualified and unqualified calls
-- Pipe chains
-- Closures and nested functions
-- Case branches and guards
-- Transitive local call analysis with cycle detection
-- Parameter effect bounds for higher-order functions
-- Type field effect annotations with type-aware resolution
-- Dependency effect loading from `priv/graded/`
-- Automatic inference for path dependencies in monorepo setups
-- Record constructor detection (uppercase-initial names are always pure)
-- Structure-preserving `.graded` file merging
-
 ## Limitations
 
 graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type information. This keeps the tool simple and avoids depending on compiler internals, but comes with trade-offs:
@@ -252,7 +190,7 @@ graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glan
 
 - **No effect polymorphism.** You can't express "this function has whatever effects its argument has." Each `check` annotation declares a specific combination of parameter bounds. There's no way to write a generic `map(f: [e]) : [e]` — you'd need separate annotations for each concrete effect set.
 
-- **Local transitive analysis is same-module only.** If function `a` calls `b` which calls `c`, and all are in the same module, effects are resolved transitively. But if `b` is in another module and has no `.graded` annotation, it resolves as `[Unknown]`.
+- **Cross-module resolution requires `graded infer` first.** If module A calls module B, B's effects are only available after `graded infer` writes B's `.graded` file. The two-pass inference handles most cases automatically, but deep transitive chains across 3+ modules may need a second `graded infer` run.
 
 - **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.graded` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
 

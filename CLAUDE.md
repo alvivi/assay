@@ -12,7 +12,7 @@ Annotations live in `priv/graded/` alongside Gleam source. The primary consumer 
 
 ```sh
 gleam build    # compile
-gleam test     # run full test suite (92 tests)
+gleam test     # run full test suite (147 tests)
 gleam run -m graded check [dir]   # check effect annotations
 gleam run -m graded infer [dir]   # infer and write effect annotations
 gleam run -m graded format [dir]  # format .graded files
@@ -67,7 +67,9 @@ external effects simplifile.read : [FileSystem]
 
 ## Effect Resolution
 
-Knowledge base priority: user externals > dependency `.graded` files > versioned catalog (`priv/catalog/`) > Unknown.
+Knowledge base priority: user externals > project sibling modules > dependency `.graded` files > path dependencies (inferred from source) > versioned catalog (`priv/catalog/`) > Unknown.
+
+Record constructors (uppercase-initial names like `Ok`, `Error`, `Some`, custom types) are recognized as always pure and skipped during extraction.
 
 Catalog files are named `{package}@{version}.graded` and resolved against `manifest.toml` — picks highest catalog version <= installed version.
 
