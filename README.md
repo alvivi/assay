@@ -236,9 +236,45 @@ The effect checker handles:
 - Dependency effect loading from `priv/assay/`
 - Structure-preserving `.assay` file merging
 
-## Future direction
+## Limitations
 
-The next major feature is **privacy and information flow checking** — lattice-based tracking that prevents sensitive data (PII, credentials) from flowing into logs, error messages, or third-party services.
+assay performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type information. This keeps the tool simple and avoids depending on compiler internals, but comes with trade-offs:
+
+- **Function references passed as values are not tracked.** If you write `list.map(items, io.println)`, assay sees `list.map` (pure) but doesn't recognize that `io.println` carries `[Stdout]` — it's passed as a value, not called. The effect is lost. Inline anonymous functions (`list.map(items, fn(x) { io.println(x) })`) work correctly because assay sees the `io.println` call directly in the function body.
+
+- **No effect polymorphism.** You can't express "this function has whatever effects its argument has." Each `check` annotation declares a specific combination of parameter bounds. There's no way to write a generic `map(f: [E]) : [E]` — you'd need separate annotations for each concrete effect set.
+
+- **Local transitive analysis is same-module only.** If function `a` calls `b` which calls `c`, and all are in the same module, effects are resolved transitively. But if `b` is in another module and has no `.assay` annotation, it resolves as `[Unknown]`.
+
+- **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.assay` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
+
+In practice, the common patterns (inline callbacks, direct calls, pipe chains) are handled correctly. The main gap is function references passed to higher-order functions — a pattern that can be worked around by inlining the callback or adding explicit annotations.
+
+## Future work
+
+### Effect polymorphism
+
+The current parameter bounds system requires concrete effect sets. A polymorphic system would allow effect variables:
+
+```
+effects map(f: [E]) : [E]
+```
+
+This would let one signature express that `map` propagates whatever effects its callback has, eliminating the need for per-use-case annotations. The checker would need effect unification — at each call site, bind `E` to the concrete effects of the argument and propagate upward.
+
+### Typed AST integration
+
+The root cause of most limitations is the lack of type information. If the Gleam compiler exposed typed AST metadata (expression types, resolved function references), assay could:
+
+- Track effects of function references passed as values (knowing that `io.println` in `list.map(items, io.println)` is a function with `[Stdout]`)
+- Resolve field calls without requiring explicit type annotations on parameters
+- Eliminate false `[Unknown]` results from indirect calls
+
+These two features — effect polymorphism and typed AST access — together would close the remaining soundness gaps and bring assay from syntax-level approximation to a complete effect system.
+
+### Privacy and information flow checking
+
+The next major feature is **lattice-based privacy tracking** — preventing sensitive data (PII, credentials) from flowing into logs, error messages, or third-party services.
 
 Both checkers share the same theoretical foundation: graded modal type theory (see [THEORY.md](./THEORY.md)). Effects use sets with union; privacy uses lattices with join.
 
