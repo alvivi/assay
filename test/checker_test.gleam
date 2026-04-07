@@ -291,49 +291,49 @@ pub fn field_call_untyped_is_unknown_test() {
   |> should.be_true()
 }
 
-// Extern declaration tests
+// External declaration tests
 
-fn check_source_with_externs(
+fn check_source_with_externals(
   source: String,
   annotations: List(EffectAnnotation),
-  externs: List(types.ExternAnnotation),
+  externals: List(types.ExternalAnnotation),
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
-  let kb = effects.with_externs(knowledge_base(), externs)
+  let kb = effects.with_externals(knowledge_base(), externals)
   checker.check(module, annotations, kb)
 }
 
-// Extern resolves instead of Unknown
-pub fn extern_resolves_effects_test() {
+// External resolves instead of Unknown
+pub fn external_resolves_effects_test() {
   let source =
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
-  let externs = [
-    types.ExternAnnotation(
+  let externals = [
+    types.ExternalAnnotation(
       "gleam/httpc",
-      types.FunctionExtern("send"),
+      types.FunctionExternal("send"),
       set.from_list(["Http"]),
     ),
   ]
   let annotation = EffectAnnotation(Check, "fetch", [], set.from_list(["Http"]))
-  check_source_with_externs(source, [annotation], externs)
+  check_source_with_externals(source, [annotation], externals)
   |> should.equal([])
 }
 
-// Extern effect exceeds budget → violation
-pub fn extern_violates_check_test() {
+// External effect exceeds budget → violation
+pub fn external_violates_check_test() {
   let source =
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
-  let externs = [
-    types.ExternAnnotation(
+  let externals = [
+    types.ExternalAnnotation(
       "gleam/httpc",
-      types.FunctionExtern("send"),
+      types.FunctionExternal("send"),
       set.from_list(["Http"]),
     ),
   ]
   let annotation = EffectAnnotation(Check, "fetch", [], set.new())
-  check_source_with_externs(source, [annotation], externs)
+  check_source_with_externals(source, [annotation], externals)
   |> { fn(vs) { vs != [] } }
   |> should.be_true()
 }

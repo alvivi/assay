@@ -1,7 +1,7 @@
 import assay/internal/annotation
 import assay/internal/types.{
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ExternAnnotation, ExternLine, FunctionExtern, ParamBound,
+  Effects, ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound,
   TypeFieldAnnotation, TypeFieldLine,
 }
 import gleam/set
@@ -379,49 +379,49 @@ pub fn merge_preserves_comments_test() {
   view_check.kind |> should.equal(Check)
 }
 
-// --- Extern annotations ---
+// --- External annotations ---
 
-pub fn parse_extern_test() {
-  let input = "extern gleam/http/request.send : [Http]"
+pub fn parse_external_test() {
+  let input = "external effects gleam/http/request.send : [Http]"
   let assert Ok(file) = annotation.parse_file(input)
-  let assert [ext] = annotation.extract_externs(file)
+  let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/http/request")
-  ext.target |> should.equal(FunctionExtern("send"))
+  ext.target |> should.equal(FunctionExternal("send"))
   ext.effects |> should.equal(set.from_list(["Http"]))
 }
 
-pub fn parse_extern_pure_test() {
-  let input = "extern gleam/json.decode : []"
+pub fn parse_external_pure_test() {
+  let input = "external effects gleam/json.decode : []"
   let assert Ok(file) = annotation.parse_file(input)
-  let assert [ext] = annotation.extract_externs(file)
+  let assert [ext] = annotation.extract_externals(file)
   ext.module |> should.equal("gleam/json")
-  ext.target |> should.equal(FunctionExtern("decode"))
+  ext.target |> should.equal(FunctionExternal("decode"))
   set.size(ext.effects) |> should.equal(0)
 }
 
-pub fn format_extern_test() {
+pub fn format_external_test() {
   let ext =
-    ExternAnnotation(
+    ExternalAnnotation(
       "gleam/httpc",
-      FunctionExtern("send"),
+      FunctionExternal("send"),
       set.from_list(["Http"]),
     )
-  annotation.format_extern(ext)
-  |> should.equal("extern gleam/httpc.send : [Http]")
+  annotation.format_external(ext)
+  |> should.equal("external effects gleam/httpc.send : [Http]")
 }
 
-pub fn extern_round_trip_test() {
-  let input = "extern gleam/httpc.send : [Http]\n"
+pub fn external_round_trip_test() {
+  let input = "external effects gleam/httpc.send : [Http]\n"
   let assert Ok(file) = annotation.parse_file(input)
   annotation.format_file(file) |> should.equal(input)
 }
 
-pub fn merge_preserves_externs_test() {
+pub fn merge_preserves_externals_test() {
   let file =
     AssayFile(lines: [
-      ExternLine(ExternAnnotation(
+      ExternalLine(ExternalAnnotation(
         "gleam/httpc",
-        FunctionExtern("send"),
+        FunctionExternal("send"),
         set.from_list(["Http"]),
       )),
       AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),
@@ -430,7 +430,7 @@ pub fn merge_preserves_externs_test() {
     EffectAnnotation(Effects, "view", [], set.from_list(["Stdout"])),
   ]
   let merged = annotation.merge_inferred(file, inferred)
-  let assert [ExternLine(ext), AnnotationLine(ann)] = merged.lines
+  let assert [ExternalLine(ext), AnnotationLine(ann)] = merged.lines
   ext.module |> should.equal("gleam/httpc")
   ann.effects |> should.equal(set.from_list(["Stdout"]))
 }

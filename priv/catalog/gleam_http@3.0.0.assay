@@ -1,5 +1,5 @@
 // gleam_http — pure HTTP types and request/response builders
 
-extern gleam/http : []
-extern gleam/http/request : []
-extern gleam/http/response : []
+external effects gleam/http : []
+external effects gleam/http/request : []
+external effects gleam/http/response : []

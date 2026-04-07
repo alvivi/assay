@@ -1,5 +1,5 @@
 // lustre_http — HTTP client for Lustre apps
 
-extern lustre_http.send : [Http]
-extern lustre_http.get : [Http]
-extern lustre_http.post : [Http]
+external effects lustre_http.send : [Http]
+external effects lustre_http.get : [Http]
+external effects lustre_http.post : [Http]

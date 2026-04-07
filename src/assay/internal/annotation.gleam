@@ -1,8 +1,8 @@
 import assay/internal/types.{
   type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
-  type ExternAnnotation, type ParamBound, type TypeFieldAnnotation,
+  type ExternalAnnotation, type ParamBound, type TypeFieldAnnotation,
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ExternAnnotation, ExternLine, FunctionExtern, ModuleExtern,
+  Effects, ExternalAnnotation, ExternalLine, FunctionExternal, ModuleExternal,
   ParamBound, TypeFieldAnnotation, TypeFieldLine,
 }
 import gleam/bool
@@ -40,7 +40,7 @@ pub fn extract_annotations(file: AssayFile) -> List(EffectAnnotation) {
     case line {
       AnnotationLine(annotation) -> Ok(annotation)
       TypeFieldLine(_) -> Error(Nil)
-      ExternLine(_) -> Error(Nil)
+      ExternalLine(_) -> Error(Nil)
       CommentLine(_) -> Error(Nil)
       BlankLine -> Error(Nil)
     }
@@ -100,27 +100,30 @@ pub fn extract_type_fields(file: AssayFile) -> List(TypeFieldAnnotation) {
   })
 }
 
-/// Render an ExternAnnotation back to its .assay line format.
-fn extern_sort_key(extern_annotation: ExternAnnotation) -> String {
-  case extern_annotation.target {
-    ModuleExtern -> extern_annotation.module
-    FunctionExtern(function) -> extern_annotation.module <> "." <> function
+/// Render an ExternalAnnotation back to its .assay line format.
+fn external_sort_key(external_annotation: ExternalAnnotation) -> String {
+  case external_annotation.target {
+    ModuleExternal -> external_annotation.module
+    FunctionExternal(function) -> external_annotation.module <> "." <> function
   }
 }
 
-pub fn format_extern(extern_annotation: ExternAnnotation) -> String {
-  let name = case extern_annotation.target {
-    ModuleExtern -> extern_annotation.module
-    FunctionExtern(function) -> extern_annotation.module <> "." <> function
+pub fn format_external(external_annotation: ExternalAnnotation) -> String {
+  let name = case external_annotation.target {
+    ModuleExternal -> external_annotation.module
+    FunctionExternal(function) -> external_annotation.module <> "." <> function
   }
-  "extern " <> name <> " : " <> format_effect_set(extern_annotation.effects)
+  "external effects "
+  <> name
+  <> " : "
+  <> format_effect_set(external_annotation.effects)
 }
 
-/// Extract extern annotations from a parsed file.
-pub fn extract_externs(file: AssayFile) -> List(ExternAnnotation) {
+/// Extract external annotations from a parsed file.
+pub fn extract_externals(file: AssayFile) -> List(ExternalAnnotation) {
   list.filter_map(file.lines, fn(line) {
     case line {
-      ExternLine(extern_annotation) -> Ok(extern_annotation)
+      ExternalLine(external_annotation) -> Ok(external_annotation)
       _ -> Error(Nil)
     }
   })
@@ -133,7 +136,7 @@ pub fn format_file(file: AssayFile) -> String {
     case line {
       AnnotationLine(annotation) -> format_annotation(annotation)
       TypeFieldLine(tf) -> format_type_field(tf)
-      ExternLine(ext) -> format_extern(ext)
+      ExternalLine(ext) -> format_external(ext)
       CommentLine(text) -> text
       BlankLine -> ""
     }
@@ -174,7 +177,7 @@ pub fn merge_inferred(
             Check -> #([line, ..lines], placed_set)
           }
         TypeFieldLine(_) -> #([line, ..lines], placed_set)
-        ExternLine(_) -> #([line, ..lines], placed_set)
+        ExternalLine(_) -> #([line, ..lines], placed_set)
         CommentLine(_) -> #([line, ..lines], placed_set)
         BlankLine -> #([line, ..lines], placed_set)
       }
@@ -226,16 +229,16 @@ pub fn format_sorted(file: AssayFile) -> String {
     })
     |> list.map(format_type_field)
 
-  let extern_lines =
-    extract_externs(file)
+  let external_lines =
+    extract_externals(file)
     |> list.sort(fn(left, right) {
-      string.compare(extern_sort_key(left), extern_sort_key(right))
+      string.compare(external_sort_key(left), external_sort_key(right))
     })
-    |> list.map(format_extern)
+    |> list.map(format_external)
 
   let sections = [
     comments,
-    extern_lines,
+    external_lines,
     type_field_lines,
     check_lines,
     effects_lines,
@@ -268,9 +271,9 @@ fn parse_structured_line(
         Ok(tf) -> Ok(TypeFieldLine(tf))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
-    "extern " <> rest ->
-      case parse_extern_line(rest) {
-        Ok(ext) -> Ok(ExternLine(ext))
+    "external effects " <> rest ->
+      case parse_external_line(rest) {
+        Ok(ext) -> Ok(ExternalLine(ext))
         Error(Nil) -> Error(InvalidLine(line_number, line))
       }
     _ -> Error(InvalidLine(line_number, line))
@@ -368,16 +371,21 @@ fn parse_type_field_line(rest: String) -> Result(TypeFieldAnnotation, Nil) {
 
 // No "." → module-level extern (e.g., `extern gleam/list : []`)
 // Has "." → function-level extern (e.g., `extern gleam/io.println : [Stdout]`)
-fn parse_extern_line(rest: String) -> Result(ExternAnnotation, Nil) {
+fn parse_external_line(rest: String) -> Result(ExternalAnnotation, Nil) {
   use #(qualified, effects) <- result.try(parse_name_colon_effects(rest))
   let segments = string.split(qualified, ".")
   let len = list.length(segments)
   case len {
-    1 -> Ok(ExternAnnotation(module: qualified, target: ModuleExtern, effects:))
+    1 ->
+      Ok(ExternalAnnotation(module: qualified, target: ModuleExternal, effects:))
     _ -> {
       use function <- result.try(list.last(segments))
       let module = segments |> list.take(len - 1) |> string.join(".")
-      Ok(ExternAnnotation(module:, target: FunctionExtern(function), effects:))
+      Ok(ExternalAnnotation(
+        module:,
+        target: FunctionExternal(function),
+        effects:,
+      ))
     }
   }
 }

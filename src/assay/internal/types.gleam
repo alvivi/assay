@@ -33,7 +33,7 @@ pub type EffectAnnotation {
 pub type AssayLine {
   AnnotationLine(annotation: EffectAnnotation)
   TypeFieldLine(type_field: TypeFieldAnnotation)
-  ExternLine(extern: ExternAnnotation)
+  ExternalLine(external: ExternalAnnotation)
   CommentLine(text: String)
   BlankLine
 }
@@ -63,17 +63,21 @@ pub type TypeFieldAnnotation {
   TypeFieldAnnotation(type_name: String, field: String, effects: Set(String))
 }
 
-/// Whether an extern targets a whole module or a specific function.
-pub type ExternTarget {
-  /// `extern gleam/list : []` — the entire module is pure.
-  ModuleExtern
-  /// `extern gleam/httpc.send : [Http]` — a specific function.
-  FunctionExtern(name: String)
+/// Whether an external targets a whole module or a specific function.
+pub type ExternalTarget {
+  /// `external effects gleam/list : []` — the entire module is pure.
+  ModuleExternal
+  /// `external effects gleam/httpc.send : [Http]` — a specific function.
+  FunctionExternal(name: String)
 }
 
-/// Effect declaration for an external function (e.g., `extern gleam/httpc.send : [Http]`).
-pub type ExternAnnotation {
-  ExternAnnotation(module: String, target: ExternTarget, effects: Set(String))
+/// Effect declaration for an external function (e.g., `external effects gleam/httpc.send : [Http]`).
+pub type ExternalAnnotation {
+  ExternalAnnotation(
+    module: String,
+    target: ExternalTarget,
+    effects: Set(String),
+  )
 }
 
 /// A single effect violation: an annotated function called something

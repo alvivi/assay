@@ -200,10 +200,10 @@ fn enrich_knowledge_base(
 ) -> #(KnowledgeBase, List(types.EffectAnnotation)) {
   let checks = annotation.extract_checks(assay_file)
   let type_fields = annotation.extract_type_fields(assay_file)
-  let externs = annotation.extract_externs(assay_file)
+  let externs = annotation.extract_externals(assay_file)
   let knowledge_base =
     effects.with_type_fields(knowledge_base, type_fields)
-    |> effects.with_externs(externs)
+    |> effects.with_externals(externs)
   #(knowledge_base, checks)
 }
 

@@ -1,8 +1,8 @@
 import assay/internal/annotation
 import assay/internal/types.{
-  type EffectAnnotation, type ExternAnnotation, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, Check, Effects, FunctionExtern,
-  ModuleExtern, QualifiedName,
+  type EffectAnnotation, type ExternalAnnotation, type ParamBound,
+  type QualifiedName, type TypeFieldAnnotation, Check, Effects, FunctionExternal,
+  ModuleExternal, QualifiedName,
 }
 import gleam/dict.{type Dict}
 import gleam/int
@@ -87,29 +87,29 @@ pub fn with_type_fields(
   KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
-/// Merge extern annotations into a knowledge base.
-/// Module-level externs mark the whole module as pure.
-/// Function-level externs are added to all_effects.
-pub fn with_externs(
+/// Merge external annotations into a knowledge base.
+/// Module-level externals mark the whole module as pure.
+/// Function-level externals are added to all_effects.
+pub fn with_externals(
   knowledge_base: KnowledgeBase,
-  externs: List(ExternAnnotation),
+  externals: List(ExternalAnnotation),
 ) -> KnowledgeBase {
   let #(effect_map, pure_set) =
     list.fold(
-      externs,
+      externals,
       #(knowledge_base.all_effects, knowledge_base.pure_modules),
-      fn(accumulator, extern_annotation) {
+      fn(accumulator, external_annotation) {
         let #(effect_map, pure_set) = accumulator
-        case extern_annotation.target {
-          ModuleExtern -> #(
+        case external_annotation.target {
+          ModuleExternal -> #(
             effect_map,
-            set.insert(pure_set, extern_annotation.module),
+            set.insert(pure_set, external_annotation.module),
           )
-          FunctionExtern(function) -> #(
+          FunctionExternal(function) -> #(
             dict.insert(
               effect_map,
-              QualifiedName(extern_annotation.module, function),
-              extern_annotation.effects,
+              QualifiedName(external_annotation.module, function),
+              external_annotation.effects,
             ),
             pure_set,
           )
@@ -263,19 +263,19 @@ fn load_catalog(
 
   let selected = resolve_catalog_files(catalog_files, installed_versions)
 
-  let all_externs =
+  let all_externals =
     list.flat_map(selected, fn(file_path) {
       case simplifile.read(file_path) {
         Error(_) -> []
         Ok(content) ->
           case annotation.parse_file(content) {
             Error(_) -> []
-            Ok(assay_file) -> annotation.extract_externs(assay_file)
+            Ok(assay_file) -> annotation.extract_externals(assay_file)
           }
       }
     })
 
-  // Reuse the same extern dispatch logic as with_externs
+  // Reuse the same external dispatch logic as with_externals
   let empty_kb =
     KnowledgeBase(
       all_effects: dict.new(),
@@ -283,7 +283,7 @@ fn load_catalog(
       type_fields: dict.new(),
       pure_modules: set.new(),
     )
-  let merged = with_externs(empty_kb, all_externs)
+  let merged = with_externals(empty_kb, all_externals)
   #(merged.all_effects, merged.pure_modules)
 }
 
