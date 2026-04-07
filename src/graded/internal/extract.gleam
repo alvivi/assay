@@ -82,6 +82,40 @@ pub fn extract_calls(
 
 // PRIVATE
 
+fn is_constructor_name(name: String) -> Bool {
+  case string.first(name) {
+    Ok(char) -> char == string.uppercase(char) && char != string.lowercase(char)
+    Error(Nil) -> False
+  }
+}
+
+fn resolve_unqualified_call(
+  name: String,
+  span: glance.Span,
+  context: ImportContext,
+) -> ExtractResult {
+  case is_constructor_name(name) {
+    True -> empty()
+    False ->
+      case dict.get(context.unqualified, name) {
+        Ok(qualified_name) ->
+          ExtractResult(
+            resolved: [ResolvedCall(qualified_name, span)],
+            local: [],
+            field: [],
+            references: [],
+          )
+        Error(Nil) ->
+          ExtractResult(
+            resolved: [],
+            local: [LocalCall(name, span)],
+            field: [],
+            references: [],
+          )
+      }
+  }
+}
+
 fn last_segment(module_path: String) -> String {
   module_path
   |> string.split("/")
@@ -153,25 +187,11 @@ fn extract_from_expression(
     }
 
     // Unqualified or local call: println(x) or helper(x)
-    glance.Call(location: span, function: glance.Variable(_, name), arguments:) -> {
-      let call_result = case dict.get(context.unqualified, name) {
-        Ok(qualified_name) ->
-          ExtractResult(
-            resolved: [ResolvedCall(qualified_name, span)],
-            local: [],
-            field: [],
-            references: [],
-          )
-        Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [LocalCall(name, span)],
-            field: [],
-            references: [],
-          )
-      }
-      merge(call_result, extract_from_arguments(arguments, context))
-    }
+    glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
+      merge(
+        resolve_unqualified_call(name, span, context),
+        extract_from_arguments(arguments, context),
+      )
 
     // Other call shapes (e.g., result of another call being called)
     glance.Call(function: function_expression, arguments:, ..) ->
@@ -316,22 +336,7 @@ fn extract_pipe_target(
       }
 
     glance.Variable(location: span, name:) ->
-      case dict.get(context.unqualified, name) {
-        Ok(qualified_name) ->
-          ExtractResult(
-            resolved: [ResolvedCall(qualified_name, span)],
-            local: [],
-            field: [],
-            references: [],
-          )
-        Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [LocalCall(name, span)],
-            field: [],
-            references: [],
-          )
-      }
+      resolve_unqualified_call(name, span, context)
 
     // Call with extra args or other expression — handle normally
     _ -> extract_from_expression(expression, context)

@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Path dependency inference loads existing `.graded` files for parameter bounds, improving accuracy for higher-order functions.
 - Two-pass inference for path dependencies so cross-dep calls resolve correctly.
 
+### Fixed
+
+- Record constructors (`Ok`, `Error`, `Some`, custom types) no longer inferred as `[Unknown]`. Gleam constructors start with an uppercase letter and are always pure.
+
 ## [0.1.0] - 2025-04-04
 
 ### Added

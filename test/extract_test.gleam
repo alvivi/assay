@@ -217,6 +217,41 @@ pub fn field_access_pipe_test() {
   fc.label |> should.equal("on_click")
 }
 
+// Constructor tests
+
+pub fn constructors_not_tracked_as_calls_test() {
+  let src =
+    "import gleam/string
+pub fn target(value) {
+  let trimmed = string.trim(value)
+  case trimmed {
+    \"\" -> Error(Nil)
+    _ -> Ok(trimmed)
+  }
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/string", "trim")])
+  result.local |> should.equal([])
+}
+
+pub fn custom_constructor_not_tracked_test() {
+  let src =
+    "pub type Id { Id(value: String) }
+pub fn target(x) { Id(x) }"
+  let result = parse_and_extract(src)
+  result.resolved |> should.equal([])
+  result.local |> should.equal([])
+}
+
+pub fn pipe_to_constructor_not_tracked_test() {
+  let src = "pub fn target(x) { x |> Ok }"
+  let result = parse_and_extract(src)
+  result.resolved |> should.equal([])
+  result.local |> should.equal([])
+}
+
 pub fn import_not_confused_with_field_test() {
   let src =
     "import gleam/io
