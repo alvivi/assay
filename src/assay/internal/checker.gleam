@@ -1,8 +1,9 @@
 import assay/internal/effects.{type KnowledgeBase}
 import assay/internal/extract.{type ImportContext}
 import assay/internal/types.{
-  type EffectAnnotation, type LocalCall, type ParamBound, type ResolvedCall,
-  type Violation, EffectAnnotation, Effects, QualifiedName, Violation,
+  type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
+  type ResolvedCall, type Violation, EffectAnnotation, Effects, QualifiedName,
+  Violation, empty, from_labels, is_subset, union,
 }
 import glance.{type Definition, type Function, type Module}
 import gleam/dict
@@ -62,8 +63,8 @@ pub fn infer(
         param_bounds,
       )
     let effect_set =
-      list.fold(all_effects, set.new(), fn(combined, pair) {
-        set.union(combined, pair.1)
+      list.fold(all_effects, empty(), fn(combined, pair) {
+        union(combined, pair.1)
       })
     EffectAnnotation(
       kind: Effects,
@@ -107,7 +108,7 @@ fn check_annotation(
       body_effects
       |> list.filter(fn(pair) {
         let #(_, call_effects) = pair
-        !set.is_subset(call_effects, of: annotation.effects)
+        !is_subset(call_effects, annotation.effects)
       })
       |> list.map(fn(pair) {
         let #(call, call_effects) = pair
@@ -136,7 +137,7 @@ fn collect_effects(
   knowledge_base: KnowledgeBase,
   visited: Set(String),
   param_bounds: List(ParamBound),
-) -> List(#(types.ResolvedCall, Set(String))) {
+) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
   // Resolved calls: qualified names looked up directly in the knowledge base.
@@ -198,7 +199,7 @@ fn resolve_unknown_local(
   function_map: dict.Dict(String, Definition(Function)),
   context: ImportContext,
   knowledge_base: KnowledgeBase,
-) -> List(#(ResolvedCall, Set(String))) {
+) -> List(#(ResolvedCall, EffectSet)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
     // Return empty rather than looping; the effects will be captured by the
@@ -215,7 +216,7 @@ fn resolve_unknown_local(
               ),
               span: local_call.span,
             )
-          [#(synthetic_call, set.from_list(["Unknown"]))]
+          [#(synthetic_call, from_labels(["Unknown"]))]
         }
         Ok(local_definition) -> {
           let new_visited = set.insert(visited, local_call.function)
@@ -236,8 +237,8 @@ fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
   knowledge_base: KnowledgeBase,
-) -> Set(String) {
-  let unknown = set.from_list(["Unknown"])
+) -> EffectSet {
+  let unknown = from_labels(["Unknown"])
   let param =
     list.find(function.parameters, fn(param) {
       case param.name {

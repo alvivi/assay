@@ -1,8 +1,9 @@
 import assay/internal/annotation
 import assay/internal/types.{
-  type EffectAnnotation, type ExternalAnnotation, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, Check, Effects, FunctionExternal,
-  ModuleExternal, QualifiedName,
+  type EffectAnnotation, type EffectSet, type ExternalAnnotation,
+  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
+  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard, empty,
+  from_labels,
 }
 import gleam/dict.{type Dict}
 import gleam/int
@@ -15,16 +16,16 @@ import simplifile
 import tom
 
 pub type EffectLookup {
-  Known(Set(String))
+  Known(EffectSet)
   Unknown
 }
 
 /// Bundles all effect knowledge: dependency + catalog, precomputed for fast lookup.
 pub type KnowledgeBase {
   KnowledgeBase(
-    all_effects: Dict(QualifiedName, Set(String)),
+    all_effects: Dict(QualifiedName, EffectSet),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
-    type_fields: Dict(#(String, String), Set(String)),
+    type_fields: Dict(#(String, String), EffectSet),
     pure_modules: Set(String),
   )
 }
@@ -132,7 +133,7 @@ pub fn lookup(
     Ok(effect_set) -> Known(effect_set)
     Error(Nil) ->
       case set.contains(knowledge_base.pure_modules, name.module) {
-        True -> Known(set.new())
+        True -> Known(empty())
         False -> Unknown
       }
   }
@@ -142,18 +143,22 @@ pub fn lookup(
 pub fn lookup_effects(
   knowledge_base: KnowledgeBase,
   name: QualifiedName,
-) -> Set(String) {
+) -> EffectSet {
   case lookup(knowledge_base, name) {
     Known(effect_set) -> effect_set
-    Unknown -> set.from_list(["Unknown"])
+    Unknown -> from_labels(["Unknown"])
   }
 }
 
-/// Format an effect set for display: [] for empty, [A, B] sorted.
-pub fn format_effect_set(effect_set: Set(String)) -> String {
-  case set.to_list(effect_set) |> list.sort(string.compare) {
-    [] -> "[]"
-    labels -> "[" <> string.join(labels, ", ") <> "]"
+/// Format an effect set for display: [] for empty, [_] for wildcard, [A, B] sorted.
+pub fn format_effect_set(effect_set: EffectSet) -> String {
+  case effect_set {
+    Wildcard -> "[_]"
+    Specific(labels) ->
+      case set.to_list(labels) |> list.sort(string.compare) {
+        [] -> "[]"
+        sorted -> "[" <> string.join(sorted, ", ") <> "]"
+      }
   }
 }
 
@@ -161,7 +166,7 @@ pub fn format_effect_set(effect_set: Set(String)) -> String {
 
 fn load_dependency_effects(
   packages_directory: String,
-) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
   let entries = case simplifile.read_directory(packages_directory) {
     Ok(found) -> found
     Error(_) -> []
@@ -183,13 +188,10 @@ fn load_dependency_effects(
 }
 
 fn load_assay_file(
-  maps: #(
-    Dict(QualifiedName, Set(String)),
-    Dict(QualifiedName, List(ParamBound)),
-  ),
+  maps: #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))),
   file_path: String,
   assay_directory: String,
-) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
   let parsed =
     simplifile.read(file_path)
     |> result.map_error(fn(_) { Nil })
@@ -211,12 +213,12 @@ fn load_assay_file(
 
 fn fold_annotation(
   accumulator: #(
-    Dict(QualifiedName, Set(String)),
+    Dict(QualifiedName, EffectSet),
     Dict(QualifiedName, List(ParamBound)),
   ),
   annotation: EffectAnnotation,
   module_path: String,
-) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
+) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
   let #(effect_map, param_map) = accumulator
   let qualified_name =
     QualifiedName(module: module_path, function: annotation.function)
@@ -253,7 +255,7 @@ fn find_catalog_directory() -> String {
 fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
-) -> #(Dict(QualifiedName, Set(String)), Set(String)) {
+) -> #(Dict(QualifiedName, EffectSet), Set(String)) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
     Ok(files) ->

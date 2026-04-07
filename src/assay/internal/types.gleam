@@ -14,9 +14,52 @@ pub type AnnotationKind {
   Check
 }
 
+/// An effect set: either a concrete set of named effects,
+/// or the universal wildcard [_] that is a superset of everything.
+pub type EffectSet {
+  /// [_] — the universal set, top element of the effect lattice.
+  /// Declaring [_] means "any effects are permitted here".
+  Wildcard
+  /// A concrete set of named effects, e.g. [Http, Stdout] or [].
+  Specific(set: Set(String))
+}
+
+/// True iff `actual` is a subset of `declared` in the effect lattice.
+/// Wildcard as declared always passes; Wildcard as actual against a
+/// finite declared set always fails.
+pub fn is_subset(actual: EffectSet, declared: EffectSet) -> Bool {
+  case declared {
+    Wildcard -> True
+    Specific(d) ->
+      case actual {
+        Wildcard -> False
+        Specific(a) -> set.is_subset(a, of: d)
+      }
+  }
+}
+
+/// Union of two effect sets. Wildcard absorbs everything.
+pub fn union(a: EffectSet, b: EffectSet) -> EffectSet {
+  case a, b {
+    Wildcard, _ -> Wildcard
+    _, Wildcard -> Wildcard
+    Specific(x), Specific(y) -> Specific(set.union(x, y))
+  }
+}
+
+/// The empty (pure) effect set.
+pub fn empty() -> EffectSet {
+  Specific(set.new())
+}
+
+/// Construct a Specific effect set from a list of label strings.
+pub fn from_labels(labels: List(String)) -> EffectSet {
+  Specific(set.from_list(labels))
+}
+
 /// An effect bound on a function-typed parameter.
 pub type ParamBound {
-  ParamBound(name: String, effects: Set(String))
+  ParamBound(name: String, effects: EffectSet)
 }
 
 /// An effect annotation from a .assay sidecar file.
@@ -25,7 +68,7 @@ pub type EffectAnnotation {
     kind: AnnotationKind,
     function: String,
     params: List(ParamBound),
-    effects: Set(String),
+    effects: EffectSet,
   )
 }
 
@@ -60,7 +103,7 @@ pub type FieldCall {
 
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
 pub type TypeFieldAnnotation {
-  TypeFieldAnnotation(type_name: String, field: String, effects: Set(String))
+  TypeFieldAnnotation(type_name: String, field: String, effects: EffectSet)
 }
 
 /// Whether an external targets a whole module or a specific function.
@@ -73,11 +116,7 @@ pub type ExternalTarget {
 
 /// Effect declaration for an external function (e.g., `external effects gleam/httpc.send : [Http]`).
 pub type ExternalAnnotation {
-  ExternalAnnotation(
-    module: String,
-    target: ExternalTarget,
-    effects: Set(String),
-  )
+  ExternalAnnotation(module: String, target: ExternalTarget, effects: EffectSet)
 }
 
 /// A single effect violation: an annotated function called something
@@ -87,8 +126,8 @@ pub type Violation {
     function: String,
     call: QualifiedName,
     span: Span,
-    declared: Set(String),
-    actual: Set(String),
+    declared: EffectSet,
+    actual: EffectSet,
   )
 }
 

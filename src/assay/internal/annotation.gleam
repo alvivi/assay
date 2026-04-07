@@ -1,9 +1,10 @@
 import assay/internal/types.{
   type AnnotationKind, type AssayFile, type AssayLine, type EffectAnnotation,
-  type ExternalAnnotation, type ParamBound, type TypeFieldAnnotation,
-  AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ExternalAnnotation, ExternalLine, FunctionExternal, ModuleExternal,
-  ParamBound, TypeFieldAnnotation, TypeFieldLine,
+  type EffectSet, type ExternalAnnotation, type ParamBound,
+  type TypeFieldAnnotation, AnnotationLine, AssayFile, BlankLine, Check,
+  CommentLine, EffectAnnotation, Effects, ExternalAnnotation, ExternalLine,
+  FunctionExternal, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
+  TypeFieldLine, Wildcard,
 }
 import gleam/bool
 import gleam/dict
@@ -404,9 +405,7 @@ fn parse_single_param(input: String) -> Result(ParamBound, Nil) {
 }
 
 // Shared helper: parse "name : [effects]" returning the trimmed name and effect set.
-fn parse_name_colon_effects(
-  input: String,
-) -> Result(#(String, set.Set(String)), Nil) {
+fn parse_name_colon_effects(input: String) -> Result(#(String, EffectSet), Nil) {
   case string.split(string.trim(input), ":") {
     [name_part, effects_part] -> {
       let name = string.trim(name_part)
@@ -433,7 +432,7 @@ fn split_at_top_level_commas(input: String) -> List(String) {
   list.reverse([current, ..segments])
 }
 
-fn parse_effect_set(input: String) -> Result(set.Set(String), Nil) {
+fn parse_effect_set(input: String) -> Result(EffectSet, Nil) {
   let trimmed = string.trim(input)
   let has_brackets =
     string.starts_with(trimmed, "[") && string.ends_with(trimmed, "]")
@@ -444,14 +443,16 @@ fn parse_effect_set(input: String) -> Result(set.Set(String), Nil) {
     |> string.drop_end(1)
     |> string.trim()
   case inner {
-    "" -> Ok(set.new())
+    "_" -> Ok(Wildcard)
+    "" -> Ok(Specific(set.new()))
     _ ->
       inner
       |> string.split(",")
       |> list.map(string.trim)
       |> list.filter(fn(label) { label != "" })
       |> set.from_list()
-      |> Ok()
+      |> Specific
+      |> Ok
   }
 }
 
@@ -464,9 +465,13 @@ fn collect_comments(lines: List(AssayLine)) -> List(String) {
   })
 }
 
-fn format_effect_set(effect_set: set.Set(String)) -> String {
-  case set.to_list(effect_set) |> list.sort(string.compare) {
-    [] -> "[]"
-    labels -> "[" <> string.join(labels, ", ") <> "]"
+fn format_effect_set(effect_set: EffectSet) -> String {
+  case effect_set {
+    Wildcard -> "[_]"
+    Specific(labels) ->
+      case set.to_list(labels) |> list.sort(string.compare) {
+        [] -> "[]"
+        sorted -> "[" <> string.join(sorted, ", ") <> "]"
+      }
   }
 }
