@@ -6,6 +6,7 @@ import gleam/io
 import gleam/list
 import gleam/result
 import gleam/string
+import gleam/yielder
 import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effects.{type KnowledgeBase}
@@ -14,6 +15,7 @@ import graded/internal/types.{
   AnnotationLine, CheckResult, GradedFile,
 }
 import simplifile
+import stdin
 
 pub type GradedError {
   DirectoryReadError(path: String, cause: simplifile.FileError)
@@ -37,7 +39,7 @@ pub fn main() -> Nil {
         }
       }
     ["format", "--stdin"] -> {
-      let input = read_stdin()
+      let input = stdin.read_lines() |> yielder.to_list() |> string.join("")
       case annotation.parse_file(input) {
         Ok(file) -> io.print(annotation.format_sorted(file))
         Error(_) -> {
@@ -378,6 +380,3 @@ fn print_warning(file: String, warning: Warning) -> Nil {
 
 @external(erlang, "erlang", "halt")
 fn halt(code: Int) -> Nil
-
-@external(erlang, "graded_ffi", "read_stdin")
-fn read_stdin() -> String

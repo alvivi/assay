@@ -18,6 +18,7 @@ packages = [
   { name = "qcheck", version = "1.0.4", build_tools = ["gleam"], requirements = ["exception", "gleam_regexp", "gleam_stdlib", "gleam_yielder", "prng"], otp_app = "qcheck", source = "hex", outer_checksum = "BD9B18C1602FBC667E3E139ED270458F8C743ED791F892CC90989CE10478C4FA" },
   { name = "simplifile", version = "2.4.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "7C18AFA4FED0B4CE1FA5B0B4BAC1FA1744427054EA993565F6F3F82E5453170D" },
   { name = "splitter", version = "1.2.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "3DFD6B6C49E61EDAF6F7B27A42054A17CFF6CA2135FF553D0CB61C234D281DD0" },
+  { name = "stdin", version = "2.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_yielder"], otp_app = "stdin", source = "hex", outer_checksum = "437084939CE094E06D32D07EB19B74473D08895AB817C03550CEDFDBF0DFDC19" },
   { name = "tom", version = "2.0.2", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "234A842F3D087D35737483F5DFB6DE9839E3366EF0CAF8726D2D094210227670" },
 ]
 
@@ -26,8 +27,10 @@ argv = { version = ">= 1.0.0 and < 2.0.0" }
 filepath = { version = ">= 1.1.2 and < 2.0.0" }
 glance = { version = ">= 6.0.0 and < 8.0.0" }
 gleam_stdlib = { version = ">= 0.44.0 and < 2.0.0" }
+gleam_yielder = { version = ">= 1.1.0 and < 2.0.0" }
 gleeunit = { version = ">= 1.0.0 and < 2.0.0" }
 glinter = { version = ">= 2.11.1 and < 3.0.0" }
 qcheck = { version = ">= 1.0.0 and < 2.0.0" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
+stdin = { version = ">= 2.0.2 and < 3.0.0" }
 tom = { version = ">= 2.0.2 and < 3.0.0" }
