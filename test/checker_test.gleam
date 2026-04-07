@@ -309,7 +309,11 @@ pub fn extern_resolves_effects_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let externs = [
-    types.ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"])),
+    types.ExternAnnotation(
+      "gleam/httpc",
+      types.FunctionExtern("send"),
+      set.from_list(["Http"]),
+    ),
   ]
   let annotation = EffectAnnotation(Check, "fetch", [], set.from_list(["Http"]))
   check_source_with_externs(source, [annotation], externs)
@@ -322,7 +326,11 @@ pub fn extern_violates_check_test() {
     "import gleam/httpc
 pub fn fetch() { httpc.send(request) }"
   let externs = [
-    types.ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"])),
+    types.ExternAnnotation(
+      "gleam/httpc",
+      types.FunctionExtern("send"),
+      set.from_list(["Http"]),
+    ),
   ]
   let annotation = EffectAnnotation(Check, "fetch", [], set.new())
   check_source_with_externs(source, [annotation], externs)

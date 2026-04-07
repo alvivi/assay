@@ -35,10 +35,13 @@ pub fn infer(
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
 
+  // Seed param bounds from existing `check` annotations only — `effects`
+  // annotations don't carry user-declared bounds, so they can't constrain
+  // higher-order parameters during inference.
   let bounds_map =
     existing_checks
-    |> list.filter(fn(a) { a.params != [] })
-    |> list.map(fn(a) { #(a.function, a.params) })
+    |> list.filter(fn(annotation) { annotation.params != [] })
+    |> list.map(fn(annotation) { #(annotation.function, annotation.params) })
     |> dict.from_list()
 
   module.functions
@@ -86,6 +89,8 @@ fn check_annotation(
   knowledge_base: KnowledgeBase,
 ) -> List(Violation) {
   case dict.get(function_map, annotation.function) {
+    // Silently skip: the annotation may be stale or apply to a different
+    // build target. Missing functions are not an error.
     Error(Nil) -> []
     Ok(function_definition) -> {
       let body_effects =
@@ -97,6 +102,8 @@ fn check_annotation(
           set.new(),
           annotation.params,
         )
+      // A call is a violation when its effect set is not a subset of the
+      // declared budget — i.e. it performs effects the caller didn't allow.
       body_effects
       |> list.filter(fn(pair) {
         let #(_, call_effects) = pair
@@ -116,6 +123,12 @@ fn check_annotation(
   }
 }
 
+// Collect all (call, effect_set) pairs reachable from a function body.
+// Calls fall into three categories:
+//   resolved — qualified module.function calls, looked up in the knowledge base
+//   local    — unqualified calls, resolved via param bounds or transitive analysis
+//   field    — object.method calls, resolved via type field annotations
+// `visited` tracks functions already on the call stack for cycle detection.
 fn collect_effects(
   function: Function,
   function_map: dict.Dict(String, Definition(Function)),
@@ -126,14 +139,19 @@ fn collect_effects(
 ) -> List(#(types.ResolvedCall, Set(String))) {
   let result = extract.extract_calls(function.body, context)
 
+  // Resolved calls: qualified names looked up directly in the knowledge base.
   let resolved_effects =
     list.map(result.resolved, fn(call) {
       #(call, effects.lookup_effects(knowledge_base, call.name))
     })
 
+  // Local calls: check param bounds first (higher-order function parameters),
+  // then fall back to transitive analysis of local definitions.
   let local_effects =
     list.flat_map(result.local, fn(local_call) {
-      case list.find(param_bounds, fn(p) { p.name == local_call.function }) {
+      case
+        list.find(param_bounds, fn(param) { param.name == local_call.function })
+      {
         Ok(bound) -> {
           let synthetic_call =
             types.ResolvedCall(
@@ -156,6 +174,7 @@ fn collect_effects(
       }
     })
 
+  // Field calls: object.method(args) resolved via type field annotations.
   let field_effects =
     list.map(result.field, fn(field_call) {
       let synthetic_call =
@@ -181,6 +200,9 @@ fn resolve_unknown_local(
   knowledge_base: KnowledgeBase,
 ) -> List(#(ResolvedCall, Set(String))) {
   case set.contains(visited, local_call.function) {
+    // Cycle detected — already analysing this function up the call stack.
+    // Return empty rather than looping; the effects will be captured by the
+    // outer frame that started the analysis.
     True -> []
     False ->
       case dict.get(function_map, local_call.function) {
@@ -217,8 +239,8 @@ fn resolve_field_call(
 ) -> Set(String) {
   let unknown = set.from_list(["Unknown"])
   let param =
-    list.find(function.parameters, fn(p) {
-      case p.name {
+    list.find(function.parameters, fn(param) {
+      case param.name {
         glance.Named(name) -> name == field_call.object
         glance.Discarded(_) -> False
       }

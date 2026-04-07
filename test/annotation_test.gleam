@@ -1,8 +1,8 @@
 import assay/annotation
 import assay/types.{
   AnnotationLine, AssayFile, BlankLine, Check, CommentLine, EffectAnnotation,
-  Effects, ExternAnnotation, ExternLine, ParamBound, TypeFieldAnnotation,
-  TypeFieldLine,
+  Effects, ExternAnnotation, ExternLine, FunctionExtern, ParamBound,
+  TypeFieldAnnotation, TypeFieldLine,
 }
 import gleam/set
 import gleeunit/should
@@ -386,7 +386,7 @@ pub fn parse_extern_test() {
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externs(file)
   ext.module |> should.equal("gleam/http/request")
-  ext.function |> should.equal("send")
+  ext.target |> should.equal(FunctionExtern("send"))
   ext.effects |> should.equal(set.from_list(["Http"]))
 }
 
@@ -395,12 +395,17 @@ pub fn parse_extern_pure_test() {
   let assert Ok(file) = annotation.parse_file(input)
   let assert [ext] = annotation.extract_externs(file)
   ext.module |> should.equal("gleam/json")
-  ext.function |> should.equal("decode")
+  ext.target |> should.equal(FunctionExtern("decode"))
   set.size(ext.effects) |> should.equal(0)
 }
 
 pub fn format_extern_test() {
-  let ext = ExternAnnotation("gleam/httpc", "send", set.from_list(["Http"]))
+  let ext =
+    ExternAnnotation(
+      "gleam/httpc",
+      FunctionExtern("send"),
+      set.from_list(["Http"]),
+    )
   annotation.format_extern(ext)
   |> should.equal("extern gleam/httpc.send : [Http]")
 }
@@ -416,7 +421,7 @@ pub fn merge_preserves_externs_test() {
     AssayFile(lines: [
       ExternLine(ExternAnnotation(
         "gleam/httpc",
-        "send",
+        FunctionExtern("send"),
         set.from_list(["Http"]),
       )),
       AnnotationLine(EffectAnnotation(Effects, "view", [], set.new())),

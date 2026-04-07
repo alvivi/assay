@@ -63,9 +63,17 @@ pub type TypeFieldAnnotation {
   TypeFieldAnnotation(type_name: String, field: String, effects: Set(String))
 }
 
+/// Whether an extern targets a whole module or a specific function.
+pub type ExternTarget {
+  /// `extern gleam/list : []` — the entire module is pure.
+  ModuleExtern
+  /// `extern gleam/httpc.send : [Http]` — a specific function.
+  FunctionExtern(name: String)
+}
+
 /// Effect declaration for an external function (e.g., `extern gleam/httpc.send : [Http]`).
 pub type ExternAnnotation {
-  ExternAnnotation(module: String, function: String, effects: Set(String))
+  ExternAnnotation(module: String, target: ExternTarget, effects: Set(String))
 }
 
 /// A single effect violation: an annotated function called something

@@ -73,6 +73,9 @@ pub fn run(directory: String) -> Result(List(CheckResult), AssayError) {
   let knowledge_base = effects.load_knowledge_base("build/packages")
   use gleam_files <- result.try(find_gleam_files(directory))
 
+  // Incremental adoption: files with no .assay sidecar are silently skipped,
+  // not treated as errors. Files whose .assay fails to parse are also skipped
+  // so a bad annotation in one file doesn't block checking the rest.
   let results =
     list.filter_map(gleam_files, fn(gleam_path) {
       let assay_path = gleam_to_assay_path(gleam_path, directory)
@@ -105,12 +108,12 @@ pub fn run_infer(directory: String) -> Result(Nil, AssayError) {
         annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
       })
 
-    let #(kb, existing_checks) = case existing_file {
-      Ok(file) -> enrich_kb(file, knowledge_base)
+    let #(knowledge_base, existing_checks) = case existing_file {
+      Ok(file) -> enrich_knowledge_base(file, knowledge_base)
       Error(Nil) -> #(knowledge_base, [])
     }
 
-    let inferred = checker.infer(module, kb, existing_checks)
+    let inferred = checker.infer(module, knowledge_base, existing_checks)
 
     let parent_directory = filepath.directory_name(assay_path)
     use Nil <- result.try(
@@ -119,11 +122,15 @@ pub fn run_infer(directory: String) -> Result(Nil, AssayError) {
     )
 
     case inferred, existing_file {
+      // Nothing inferred and no existing file — nothing to write.
       [], Error(Nil) -> Ok(Nil)
+      // Existing file present — merge inferred effects, preserving comments,
+      // blank lines, check annotations, and their ordering.
       _, Ok(file) -> {
         let merged = annotation.merge_inferred(file, inferred)
         write_assay_file(assay_path, merged)
       }
+      // No existing file — create a fresh one from inferred effects.
       _, Error(Nil) -> {
         let assay_file = AssayFile(lines: list.map(inferred, AnnotationLine))
         write_assay_file(assay_path, assay_file)
@@ -187,17 +194,17 @@ pub fn gleam_to_assay_path(
 
 // PRIVATE
 
-fn enrich_kb(
+fn enrich_knowledge_base(
   assay_file: AssayFile,
   knowledge_base: KnowledgeBase,
 ) -> #(KnowledgeBase, List(types.EffectAnnotation)) {
   let checks = annotation.extract_checks(assay_file)
   let type_fields = annotation.extract_type_fields(assay_file)
   let externs = annotation.extract_externs(assay_file)
-  let kb =
+  let knowledge_base =
     effects.with_type_fields(knowledge_base, type_fields)
     |> effects.with_externs(externs)
-  #(kb, checks)
+  #(knowledge_base, checks)
 }
 
 fn find_assay_files(directory: String) -> Result(List(String), AssayError) {
@@ -205,6 +212,8 @@ fn find_assay_files(directory: String) -> Result(List(String), AssayError) {
     "src" -> "priv/assay"
     _ -> directory <> "/priv/assay"
   }
+  // A missing priv/assay/ directory is not an error — it just means
+  // `assay infer` hasn't been run yet. Treat it as an empty file list.
   let files = case simplifile.get_files(priv_directory) {
     Ok(found) -> found
     Error(_) -> []
@@ -280,11 +289,12 @@ fn check_file(
     annotation.parse_file(assay_content)
     |> result.map_error(AssayParseError(gleam_path, _)),
   )
-  let #(kb, check_annotations) = enrich_kb(assay_file, knowledge_base)
+  let #(knowledge_base, check_annotations) =
+    enrich_knowledge_base(assay_file, knowledge_base)
 
   use module <- result.try(read_and_parse_gleam(gleam_path))
 
-  let violations = checker.check(module, check_annotations, kb)
+  let violations = checker.check(module, check_annotations, knowledge_base)
   Ok(CheckResult(file: gleam_path, violations:))
 }
 

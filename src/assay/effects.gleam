@@ -1,7 +1,8 @@
 import assay/annotation
 import assay/types.{
   type EffectAnnotation, type ExternAnnotation, type ParamBound,
-  type QualifiedName, type TypeFieldAnnotation, Effects, QualifiedName,
+  type QualifiedName, type TypeFieldAnnotation, Check, Effects, FunctionExtern,
+  ModuleExtern, QualifiedName,
 }
 import gleam/dict.{type Dict}
 import gleam/int
@@ -72,39 +73,54 @@ pub fn with_type_fields(
   type_fields: List(TypeFieldAnnotation),
 ) -> KnowledgeBase {
   let merged =
-    list.fold(type_fields, knowledge_base.type_fields, fn(acc, tf) {
-      dict.insert(acc, #(tf.type_name, tf.field), tf.effects)
-    })
+    list.fold(
+      type_fields,
+      knowledge_base.type_fields,
+      fn(accumulator, type_field) {
+        dict.insert(
+          accumulator,
+          #(type_field.type_name, type_field.field),
+          type_field.effects,
+        )
+      },
+    )
   KnowledgeBase(..knowledge_base, type_fields: merged)
 }
 
 /// Merge extern annotations into a knowledge base.
-/// Module-level externs (function == "") with empty effects are added as pure modules.
+/// Module-level externs mark the whole module as pure.
 /// Function-level externs are added to all_effects.
 pub fn with_externs(
   knowledge_base: KnowledgeBase,
   externs: List(ExternAnnotation),
 ) -> KnowledgeBase {
-  let #(effects, pure) =
+  let #(effect_map, pure_set) =
     list.fold(
       externs,
       #(knowledge_base.all_effects, knowledge_base.pure_modules),
-      fn(acc, ext) {
-        let #(eff_map, pure_set) = acc
-        case ext.function {
-          "" -> #(eff_map, set.insert(pure_set, ext.module))
-          _ -> #(
+      fn(accumulator, extern_annotation) {
+        let #(effect_map, pure_set) = accumulator
+        case extern_annotation.target {
+          ModuleExtern -> #(
+            effect_map,
+            set.insert(pure_set, extern_annotation.module),
+          )
+          FunctionExtern(function) -> #(
             dict.insert(
-              eff_map,
-              QualifiedName(ext.module, ext.function),
-              ext.effects,
+              effect_map,
+              QualifiedName(extern_annotation.module, function),
+              extern_annotation.effects,
             ),
             pure_set,
           )
         }
       },
     )
-  KnowledgeBase(..knowledge_base, all_effects: effects, pure_modules: pure)
+  KnowledgeBase(
+    ..knowledge_base,
+    all_effects: effect_map,
+    pure_modules: pure_set,
+  )
 }
 
 /// Look up the effect set for a qualified function name.
@@ -186,29 +202,33 @@ fn load_assay_file(
       let module_path = file_path_to_module(file_path, assay_directory)
       let #(effect_map, param_map) = maps
       annotation.extract_annotations(assay_file)
-      |> list.fold(#(effect_map, param_map), fn(acc, ann) {
-        fold_annotation(acc, ann, module_path)
+      |> list.fold(#(effect_map, param_map), fn(accumulator, annotation) {
+        fold_annotation(accumulator, annotation, module_path)
       })
     }
   }
 }
 
 fn fold_annotation(
-  acc: #(
+  accumulator: #(
     Dict(QualifiedName, Set(String)),
     Dict(QualifiedName, List(ParamBound)),
   ),
-  ann: EffectAnnotation,
+  annotation: EffectAnnotation,
   module_path: String,
 ) -> #(Dict(QualifiedName, Set(String)), Dict(QualifiedName, List(ParamBound))) {
-  let #(eff_map, par_map) = acc
-  let qname = QualifiedName(module: module_path, function: ann.function)
-  case ann.kind {
-    Effects -> #(dict.insert(eff_map, qname, ann.effects), par_map)
-    _ ->
-      case ann.params {
-        [] -> acc
-        params -> #(eff_map, dict.insert(par_map, qname, params))
+  let #(effect_map, param_map) = accumulator
+  let qualified_name =
+    QualifiedName(module: module_path, function: annotation.function)
+  case annotation.kind {
+    Effects -> #(
+      dict.insert(effect_map, qualified_name, annotation.effects),
+      param_map,
+    )
+    Check ->
+      case annotation.params {
+        [] -> accumulator
+        params -> #(effect_map, dict.insert(param_map, qualified_name, params))
       }
   }
 }
@@ -236,7 +256,8 @@ fn load_catalog(
 ) -> #(Dict(QualifiedName, Set(String)), Set(String)) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
-    Ok(files) -> list.filter(files, fn(f) { string.ends_with(f, ".assay") })
+    Ok(files) ->
+      list.filter(files, fn(file) { string.ends_with(file, ".assay") })
     Error(_) -> []
   }
 
@@ -287,10 +308,10 @@ fn resolve_catalog_files(
 
   // Group by package name
   let grouped =
-    list.fold(parsed, dict.new(), fn(acc, entry) {
+    list.fold(parsed, dict.new(), fn(accumulator, entry) {
       let #(package, version, path) = entry
-      let existing = dict.get(acc, package) |> result.unwrap([])
-      dict.insert(acc, package, [#(version, path), ..existing])
+      let existing = dict.get(accumulator, package) |> result.unwrap([])
+      dict.insert(accumulator, package, [#(version, path), ..existing])
     })
 
   // For each installed package, pick best catalog version
@@ -315,13 +336,15 @@ fn pick_best_version(
 ) -> Result(String, Nil) {
   // Pick highest version ≤ installed; if none, pick highest available
   let eligible =
-    list.filter(versions, fn(v) { semver_lte(v.0, installed) })
-    |> list.sort(fn(a, b) { compare_semver(b.0, a.0) })
+    list.filter(versions, fn(version) { semver_lte(version.0, installed) })
+    |> list.sort(fn(left, right) { compare_semver(right.0, left.0) })
   case eligible {
     [best, ..] -> Ok(best.1)
     [] ->
       // Fallback: use highest available catalog version
-      case list.sort(versions, fn(a, b) { compare_semver(b.0, a.0) }) {
+      case
+        list.sort(versions, fn(left, right) { compare_semver(right.0, left.0) })
+      {
         [best, ..] -> Ok(best.1)
         [] -> Error(Nil)
       }
@@ -344,15 +367,18 @@ fn parse_semver(version: String) -> #(Int, Int, Int) {
   }
 }
 
-fn semver_lte(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> Bool {
-  compare_semver(a, b) != order.Gt
+fn semver_lte(left: #(Int, Int, Int), right: #(Int, Int, Int)) -> Bool {
+  compare_semver(left, right) != order.Gt
 }
 
-fn compare_semver(a: #(Int, Int, Int), b: #(Int, Int, Int)) -> order.Order {
-  case int.compare(a.0, b.0) {
+fn compare_semver(
+  left: #(Int, Int, Int),
+  right: #(Int, Int, Int),
+) -> order.Order {
+  case int.compare(left.0, right.0) {
     order.Eq ->
-      case int.compare(a.1, b.1) {
-        order.Eq -> int.compare(a.2, b.2)
+      case int.compare(left.1, right.1) {
+        order.Eq -> int.compare(left.2, right.2)
         other -> other
       }
     other -> other
@@ -371,17 +397,17 @@ fn parse_manifest_versions(manifest_path: String) -> Dict(String, String) {
       tom.get_array(toml, ["packages"]) |> result.map_error(fn(_) { Nil }),
     )
     Ok(
-      list.fold(packages, dict.new(), fn(acc, pkg) {
-        case pkg {
+      list.fold(packages, dict.new(), fn(accumulator, package) {
+        case package {
           tom.InlineTable(table) ->
             case
               tom.get_string(table, ["name"]),
               tom.get_string(table, ["version"])
             {
-              Ok(name), Ok(version) -> dict.insert(acc, name, version)
-              _, _ -> acc
+              Ok(name), Ok(version) -> dict.insert(accumulator, name, version)
+              _, _ -> accumulator
             }
-          _ -> acc
+          _ -> accumulator
         }
       }),
     )
