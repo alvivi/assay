@@ -161,6 +161,47 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
   }
 }
 
+/// Parse gleam.toml to find path dependencies.
+/// Returns a list of #(package_name, source_directory) pairs.
+pub fn parse_path_dependencies(
+  gleam_toml_path: String,
+) -> List(#(String, String)) {
+  let parsed = {
+    use content <- result.try(
+      simplifile.read(gleam_toml_path) |> result.map_error(fn(_) { Nil }),
+    )
+    use toml <- result.try(
+      tom.parse(content) |> result.map_error(fn(_) { Nil }),
+    )
+    use deps <- result.try(
+      tom.get_table(toml, ["dependencies"]) |> result.map_error(fn(_) { Nil }),
+    )
+    Ok(
+      dict.fold(deps, [], fn(acc, name, value) {
+        case value {
+          tom.InlineTable(table) ->
+            case tom.get_string(table, ["path"]) {
+              Ok(path) -> [#(name, path), ..acc]
+              Error(_) -> acc
+            }
+          _ -> acc
+        }
+      }),
+    )
+  }
+  result.unwrap(parsed, [])
+}
+
+/// Merge inferred effects into a knowledge base.
+/// Existing entries in the knowledge base take priority.
+pub fn with_inferred(
+  knowledge_base: KnowledgeBase,
+  inferred: Dict(QualifiedName, EffectSet),
+) -> KnowledgeBase {
+  let merged = dict.merge(inferred, knowledge_base.all_effects)
+  KnowledgeBase(..knowledge_base, all_effects: merged)
+}
+
 // PRIVATE
 
 fn load_dependency_effects(

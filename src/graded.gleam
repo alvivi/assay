@@ -22,6 +22,7 @@
 import argv
 import filepath
 import glance
+import gleam/dict
 import gleam/int
 import gleam/io
 import gleam/list
@@ -33,7 +34,7 @@ import graded/internal/checker
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/types.{
   type CheckResult, type GradedFile, type Violation, type Warning,
-  AnnotationLine, CheckResult, GradedFile,
+  AnnotationLine, CheckResult, GradedFile, QualifiedName,
 }
 import simplifile
 import stdin
@@ -101,7 +102,9 @@ pub fn main() -> Nil {
 /// Run the checker on all .gleam files in a directory.
 /// Only enforces `check` annotations.
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
-  let knowledge_base = effects.load_knowledge_base("build/packages")
+  let knowledge_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
   use gleam_files <- result.try(find_gleam_files(directory))
 
   // Incremental adoption: files with no .graded sidecar are silently skipped,
@@ -125,7 +128,9 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 
 /// Infer effects for all .gleam files and write/merge .graded files.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
-  let knowledge_base = effects.load_knowledge_base("build/packages")
+  let knowledge_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
   use gleam_files <- result.try(find_gleam_files(directory))
 
   list.try_each(gleam_files, fn(gleam_path) {
@@ -224,6 +229,52 @@ pub fn gleam_to_graded_path(
 }
 
 // PRIVATE
+
+fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
+  let path_deps = effects.parse_path_dependencies("gleam.toml")
+  let inferred =
+    list.fold(path_deps, dict.new(), fn(acc, dep) {
+      let #(_name, dep_path) = dep
+      let source_dir = dep_path <> "/src"
+      let gleam_files = case simplifile.get_files(source_dir) {
+        Ok(found) ->
+          list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
+        Error(_) -> []
+      }
+      list.fold(gleam_files, acc, fn(inner_acc, gleam_path) {
+        case parse_gleam_silent(gleam_path) {
+          Error(Nil) -> inner_acc
+          Ok(module) -> {
+            let annotations = checker.infer(module, knowledge_base, [])
+            let prefix = source_dir <> "/"
+            let module_path = case string.starts_with(gleam_path, prefix) {
+              True -> string.drop_start(gleam_path, string.length(prefix))
+              False -> gleam_path
+            }
+            let module_path = string.replace(module_path, ".gleam", "")
+            list.fold(annotations, inner_acc, fn(effect_acc, annotation) {
+              dict.insert(
+                effect_acc,
+                QualifiedName(
+                  module: module_path,
+                  function: annotation.function,
+                ),
+                annotation.effects,
+              )
+            })
+          }
+        }
+      })
+    })
+  effects.with_inferred(knowledge_base, inferred)
+}
+
+fn parse_gleam_silent(path: String) -> Result(glance.Module, Nil) {
+  use source <- result.try(
+    simplifile.read(path) |> result.map_error(fn(_) { Nil }),
+  )
+  glance.module(source) |> result.map_error(fn(_) { Nil })
+}
 
 fn enrich_knowledge_base(
   graded_file: GradedFile,

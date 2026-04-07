@@ -1,12 +1,15 @@
 import generators
+import gleam/dict
 import gleam/int
 import gleam/list
 import gleam/order
 import gleam/set
+import gleam/string
 import gleeunit/should
 import graded/internal/effects
 import graded/internal/types.{QualifiedName, Specific, Wildcard}
 import qcheck
+import simplifile
 
 fn knowledge_base() -> effects.KnowledgeBase {
   effects.empty_knowledge_base()
@@ -258,6 +261,61 @@ pub fn parse_semver_roundtrip_test() {
     <> "."
     <> int.to_string(parsed.2)
   reparsed |> should.equal(s)
+}
+
+// ──── Path Dependencies ────
+
+pub fn parse_path_dependencies_test() {
+  let toml_path = "test/fixtures/gleam_with_path_deps.toml"
+  let content =
+    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\ndeeaitch = { path = \"../deeaitch\" }\ndeekay = { path = \"../deekay/gleam_lib\" }\n"
+  let assert Ok(Nil) = simplifile.write(toml_path, content)
+  let deps = effects.parse_path_dependencies(toml_path)
+  let assert Ok(Nil) = simplifile.delete(toml_path)
+  deps
+  |> list.sort(fn(a, b) { string.compare(a.0, b.0) })
+  |> should.equal([
+    #("deeaitch", "../deeaitch"),
+    #("deekay", "../deekay/gleam_lib"),
+  ])
+}
+
+pub fn parse_path_dependencies_no_path_deps_test() {
+  let toml_path = "test/fixtures/gleam_no_path_deps.toml"
+  let content =
+    "name = \"myapp\"\nversion = \"1.0.0\"\n\n[dependencies]\ngleam_stdlib = \">= 0.44.0\"\n"
+  let assert Ok(Nil) = simplifile.write(toml_path, content)
+  let deps = effects.parse_path_dependencies(toml_path)
+  let assert Ok(Nil) = simplifile.delete(toml_path)
+  deps |> should.equal([])
+}
+
+pub fn parse_path_dependencies_missing_file_test() {
+  effects.parse_path_dependencies("nonexistent.toml")
+  |> should.equal([])
+}
+
+pub fn with_inferred_does_not_overwrite_test() {
+  let kb = knowledge_base()
+  let inferred =
+    dict.from_list([
+      #(QualifiedName("gleam/io", "println"), types.empty()),
+    ])
+  let enriched = effects.with_inferred(kb, inferred)
+  // Existing KB entry should take priority (Stdout), not be overwritten to []
+  effects.lookup_effects(enriched, QualifiedName("gleam/io", "println"))
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn with_inferred_adds_new_entries_test() {
+  let kb = knowledge_base()
+  let inferred =
+    dict.from_list([
+      #(QualifiedName("mylib/foo", "bar"), Specific(set.from_list(["Http"]))),
+    ])
+  let enriched = effects.with_inferred(kb, inferred)
+  effects.lookup_effects(enriched, QualifiedName("mylib/foo", "bar"))
+  |> should.equal(Specific(set.from_list(["Http"])))
 }
 
 pub fn pick_best_version_eligible_test() {
