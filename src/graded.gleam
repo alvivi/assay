@@ -34,6 +34,7 @@ import graded/internal/annotation
 import graded/internal/checker
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
+import graded/internal/topo
 import graded/internal/types.{
   type CheckResult, type GradedFile, type QualifiedName, type Violation,
   type Warning, AnnotationLine, CheckResult, GradedFile, QualifiedName,
@@ -150,7 +151,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
   let graph = build_dependency_graph(index)
-  use sorted <- result.try(topological_sort(graph))
+  use sorted <- result.try(topo.sort(graph) |> result.map_error(CyclicImports))
   infer_in_topo_order(sorted, index, directory, base_kb)
 }
 
@@ -249,79 +250,6 @@ fn build_dependency_graph(
     |> dict.values()
     |> list.filter(fn(imported) { dict.has_key(index, imported) })
     |> set.from_list()
-  })
-}
-
-/// Kahn's algorithm: produce a leaves-first ordering of the project module
-/// graph. Returns `CyclicImports` if a cycle is detected (which Gleam's own
-/// module system should already prevent — this is a defensive guard).
-fn topological_sort(
-  graph: Dict(String, Set(String)),
-) -> Result(List(String), GradedError) {
-  let in_degrees = dict.map_values(graph, fn(_node, deps) { set.size(deps) })
-  let reverse = build_reverse_graph(graph)
-  let initial_queue =
-    in_degrees
-    |> dict.filter(fn(_node, degree) { degree == 0 })
-    |> dict.keys()
-  kahn_loop(initial_queue, in_degrees, reverse, [])
-}
-
-fn kahn_loop(
-  queue: List(String),
-  in_degrees: Dict(String, Int),
-  reverse: Dict(String, Set(String)),
-  acc: List(String),
-) -> Result(List(String), GradedError) {
-  case queue {
-    [] -> {
-      let remaining = dict.filter(in_degrees, fn(_node, degree) { degree > 0 })
-      case dict.is_empty(remaining) {
-        True -> Ok(list.reverse(acc))
-        False -> Error(CyclicImports(modules: dict.keys(remaining)))
-      }
-    }
-    [node, ..rest] -> {
-      let dependents = case dict.get(reverse, node) {
-        Ok(s) -> set.to_list(s)
-        Error(_) -> []
-      }
-      let #(new_in_degrees, newly_zero) =
-        list.fold(dependents, #(in_degrees, []), fn(state, dependent) {
-          let #(degrees, zero_acc) = state
-          let current = case dict.get(degrees, dependent) {
-            Ok(d) -> d
-            Error(_) -> 0
-          }
-          let updated = current - 1
-          let new_degrees = dict.insert(degrees, dependent, updated)
-          case updated {
-            0 -> #(new_degrees, [dependent, ..zero_acc])
-            _ -> #(new_degrees, zero_acc)
-          }
-        })
-      kahn_loop(list.append(rest, newly_zero), new_in_degrees, reverse, [
-        node,
-        ..acc
-      ])
-    }
-  }
-}
-
-/// Invert a forward dependency graph (`node -> deps of node`) into a
-/// dependents graph (`node -> things that depend on node`). Used by Kahn's
-/// algorithm to find which nodes are unblocked when a leaf is processed.
-fn build_reverse_graph(
-  graph: Dict(String, Set(String)),
-) -> Dict(String, Set(String)) {
-  dict.fold(graph, dict.new(), fn(reverse, node, deps) {
-    set.fold(deps, reverse, fn(rev, dep) {
-      let existing = case dict.get(rev, dep) {
-        Ok(s) -> s
-        Error(_) -> set.new()
-      }
-      dict.insert(rev, dep, set.insert(existing, node))
-    })
   })
 }
 
@@ -429,7 +357,12 @@ fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
 /// into the global knowledge base. Errors are swallowed (returned as
 /// `Error(Nil)`) to preserve the existing tolerance: a malformed dep
 /// shouldn't break the whole project.
-fn infer_path_dep(
+///
+/// Exposed (pub) primarily so tests can exercise the topological-order path
+/// inference on a temporary directory tree without going through
+/// `gleam.toml` resolution. Production callers go through
+/// `enrich_with_path_deps` which reads `gleam.toml` to discover dep paths.
+pub fn infer_path_dep(
   dep_path: String,
   base_kb: KnowledgeBase,
 ) -> Result(Dict(QualifiedName, types.EffectSet), Nil) {
@@ -466,9 +399,7 @@ fn infer_path_dep(
       |> set.from_list()
     })
 
-  use sorted <- result.try(
-    topological_sort(graph) |> result.map_error(fn(_) { Nil }),
-  )
+  use sorted <- result.try(topo.sort(graph) |> result.map_error(fn(_) { Nil }))
   let #(inferred, _final_kb) =
     list.fold(sorted, #(dict.new(), base_kb), fn(state, module_path) {
       infer_path_dep_module(state, module_path, index)
