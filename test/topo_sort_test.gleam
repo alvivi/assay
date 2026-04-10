@@ -4,6 +4,7 @@
 //// invariants are worth pinning down independently of any inference fixture.
 
 import gleam/dict.{type Dict}
+import gleam/int
 import gleam/list
 import gleam/set.{type Set}
 import gleeunit/should
@@ -31,7 +32,7 @@ fn node_names_loop(remaining: Int, acc: List(String)) -> List(String) {
     True -> acc
     False -> {
       let next = remaining - 1
-      node_names_loop(next, ["n" <> int_to_string(next), ..acc])
+      node_names_loop(next, ["n" <> int.to_string(next), ..acc])
     }
   }
 }
@@ -65,9 +66,6 @@ fn deps_subset_gen(candidates: List(String)) -> qcheck.Generator(List(String)) {
   }
 }
 
-@external(erlang, "erlang", "integer_to_binary")
-fn int_to_string(i: Int) -> String
-
 // ----- helpers -----
 
 fn position(haystack: List(String), needle: String) -> Int {
@@ -87,17 +85,12 @@ fn position_loop(haystack: List(String), needle: String, index: Int) -> Int {
 
 // ----- properties -----
 
-/// Length preservation: every node in the input graph appears in the output
-/// exactly once. Sorting must not lose or duplicate nodes.
 pub fn topo_sort_length_preservation_test() {
   use graph <- qcheck.given(random_dag_gen())
   let assert Ok(sorted) = topo.sort(graph)
   list.length(sorted) |> should.equal(dict.size(graph))
 }
 
-/// Set preservation: the multiset of sorted nodes equals the set of input
-/// nodes. Stronger than length preservation — also catches duplication or
-/// substitution.
 pub fn topo_sort_set_preservation_test() {
   use graph <- qcheck.given(random_dag_gen())
   let assert Ok(sorted) = topo.sort(graph)
@@ -106,10 +99,8 @@ pub fn topo_sort_set_preservation_test() {
   sorted_set |> should.equal(nodes_set)
 }
 
-/// Order respects edges: for every edge `u -> v` in the graph (i.e. `u`
-/// depends on `v`), `v` must appear *before* `u` in the leaves-first output.
-/// This is the defining property of topological order — without it the
-/// algorithm is broken regardless of any other invariant.
+/// Defining property of topological order: for every edge `u -> v` (u
+/// depends on v), v must appear *before* u in the leaves-first output.
 pub fn topo_sort_order_respects_edges_test() {
   use graph <- qcheck.given(random_dag_gen())
   let assert Ok(sorted) = topo.sort(graph)
@@ -148,10 +139,9 @@ pub fn topo_sort_simple_chain_test() {
   sorted |> should.equal(["c", "b", "a"])
 }
 
-/// Cycle detection: a hand-built cyclic graph must return Error with the
-/// cyclic node names. This exercises the `CyclicImports` code path that is
-/// otherwise unreachable through user input (Gleam disallows circular
-/// imports at the language level).
+/// Cycle detection is unreachable from real Gleam projects (the compiler
+/// rejects circular imports), but the algorithm itself must still report it
+/// rather than producing a partial order — this test exercises that path.
 pub fn topo_sort_detects_simple_cycle_test() {
   // a -> b -> a (a depends on b, b depends on a)
   let graph =
@@ -159,12 +149,10 @@ pub fn topo_sort_detects_simple_cycle_test() {
       #("a", set.from_list(["b"])),
       #("b", set.from_list(["a"])),
     ])
-  let result = topo.sort(graph)
-  case result {
-    Error(cyclic) -> {
-      // Both nodes participate in the cycle and should be reported.
-      list.contains(cyclic, "a") |> should.be_true()
-      list.contains(cyclic, "b") |> should.be_true()
+  case topo.sort(graph) {
+    Error(topo.Cycle(nodes:)) -> {
+      list.contains(nodes, "a") |> should.be_true()
+      list.contains(nodes, "b") |> should.be_true()
     }
     Ok(_) -> should.fail()
   }
@@ -179,7 +167,7 @@ pub fn topo_sort_detects_three_node_cycle_test() {
       #("c", set.from_list(["a"])),
     ])
   case topo.sort(graph) {
-    Error(cyclic) -> list.length(cyclic) |> should.equal(3)
+    Error(topo.Cycle(nodes:)) -> list.length(nodes) |> should.equal(3)
     Ok(_) -> should.fail()
   }
 }
@@ -195,10 +183,10 @@ pub fn topo_sort_partial_cycle_returns_only_cyclic_nodes_test() {
       #("b", set.from_list(["a"])),
     ])
   case topo.sort(graph) {
-    Error(cyclic) -> {
-      list.contains(cyclic, "leaf") |> should.be_false()
-      list.contains(cyclic, "a") |> should.be_true()
-      list.contains(cyclic, "b") |> should.be_true()
+    Error(topo.Cycle(nodes:)) -> {
+      list.contains(nodes, "leaf") |> should.be_false()
+      list.contains(nodes, "a") |> should.be_true()
+      list.contains(nodes, "b") |> should.be_true()
     }
     Ok(_) -> should.fail()
   }

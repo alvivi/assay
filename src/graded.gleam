@@ -151,7 +151,13 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
   let graph = build_dependency_graph(index)
-  use sorted <- result.try(topo.sort(graph) |> result.map_error(CyclicImports))
+  use sorted <- result.try(
+    topo.sort(graph)
+    |> result.map_error(fn(error) {
+      let topo.Cycle(nodes:) = error
+      CyclicImports(modules: nodes)
+    }),
+  )
   infer_in_topo_order(sorted, index, directory, base_kb)
 }
 
@@ -300,11 +306,17 @@ fn infer_one_file(
 
   let inferred = checker.infer(module, per_file_kb, existing_checks)
 
-  let parent_directory = filepath.directory_name(graded_path)
-  use Nil <- result.try(
-    simplifile.create_directory_all(parent_directory)
-    |> result.map_error(DirectoryCreateError(parent_directory, _)),
-  )
+  // Skip the parent-dir create when there's nothing to write — saves an
+  // mkdir syscall per module that has no inferred effects and no prior
+  // .graded file (a common case for modules that only call stdlib).
+  use Nil <- result.try(case inferred, existing_file {
+    [], Error(Nil) -> Ok(Nil)
+    _, _ -> {
+      let parent_directory = filepath.directory_name(graded_path)
+      simplifile.create_directory_all(parent_directory)
+      |> result.map_error(DirectoryCreateError(parent_directory, _))
+    }
+  })
 
   use Nil <- result.try(case inferred, existing_file {
     [], Error(Nil) -> Ok(Nil)

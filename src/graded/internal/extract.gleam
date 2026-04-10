@@ -1,3 +1,4 @@
+import filepath
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
@@ -26,7 +27,7 @@ pub fn module_path_for_source(
     True -> string.drop_start(gleam_path, string.length(prefix))
     False -> gleam_path
   }
-  string.replace(relative, ".gleam", "")
+  filepath.strip_extension(relative)
 }
 
 /// Import context built from a module's import list.

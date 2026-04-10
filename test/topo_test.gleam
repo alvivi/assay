@@ -26,7 +26,13 @@ import simplifile
 // ----- helpers -----
 
 fn make_fixture(name: String, files: List(#(String, String))) -> String {
-  let directory = "/tmp/graded_topo_" <> name
+  write_fixture("/tmp/graded_topo_" <> name, files)
+}
+
+/// Materialise a tree of files at `directory`, replacing any prior contents.
+/// Used by both project-style fixtures (under `/tmp/graded_topo_*`) and the
+/// path-dep smoke test which writes to its own directory.
+fn write_fixture(directory: String, files: List(#(String, String))) -> String {
   let _ = simplifile.delete(directory)
   list.each(files, fn(entry) {
     let #(relative_path, contents) = entry
@@ -36,6 +42,93 @@ fn make_fixture(name: String, files: List(#(String, String))) -> String {
     let assert Ok(Nil) = simplifile.write(full_path, contents)
   })
   directory
+}
+
+/// Four-module pure chain `a -> b -> c -> d` where `d` calls `string.uppercase`
+/// (no effects). Reused by every test that needs the canonical "deep
+/// transitive chain that the old two-pass strategy mishandled" shape.
+fn pure_chain_files() -> List(#(String, String)) {
+  [
+    #(
+      "app/d.gleam",
+      "import gleam/string
+
+pub fn format(value: String) -> String {
+  string.uppercase(value)
+}
+",
+    ),
+    #(
+      "app/c.gleam",
+      "import app/d
+
+pub fn transform(value: String) -> String {
+  d.format(value)
+}
+",
+    ),
+    #(
+      "app/b.gleam",
+      "import app/c
+
+pub fn process(value: String) -> String {
+  c.transform(value)
+}
+",
+    ),
+    #(
+      "app/a.gleam",
+      "import app/b
+
+pub fn run(value: String) -> String {
+  b.process(value)
+}
+",
+    ),
+  ]
+}
+
+/// Same shape as `pure_chain_files` but with `io.println` at the leaf so the
+/// `Stdout` effect must propagate up four modules.
+fn impure_chain_files() -> List(#(String, String)) {
+  [
+    #(
+      "app/d.gleam",
+      "import gleam/io
+
+pub fn shout(value: String) -> Nil {
+  io.println(value)
+}
+",
+    ),
+    #(
+      "app/c.gleam",
+      "import app/d
+
+pub fn transform(value: String) -> Nil {
+  d.shout(value)
+}
+",
+    ),
+    #(
+      "app/b.gleam",
+      "import app/c
+
+pub fn process(value: String) -> Nil {
+  c.transform(value)
+}
+",
+    ),
+    #(
+      "app/a.gleam",
+      "import app/b
+
+pub fn run(value: String) -> Nil {
+  b.process(value)
+}
+",
+    ),
+  ]
 }
 
 fn cleanup(directory: String) -> Nil {
@@ -69,49 +162,10 @@ fn with_labels(labels: List(String)) -> EffectSet {
 // ----- chain (the reported issue, verbatim) -----
 
 pub fn chain_resolves_in_one_pass_test() {
-  let directory =
-    make_fixture("chain", [
-      #(
-        "app/d.gleam",
-        "import gleam/string
-
-pub fn format(value: String) -> String {
-  string.uppercase(value)
-}
-",
-      ),
-      #(
-        "app/c.gleam",
-        "import app/d
-
-pub fn transform(value: String) -> String {
-  d.format(value)
-}
-",
-      ),
-      #(
-        "app/b.gleam",
-        "import app/c
-
-pub fn process(value: String) -> String {
-  c.transform(value)
-}
-",
-      ),
-      #(
-        "app/a.gleam",
-        "import app/b
-
-pub fn run(value: String) -> String {
-  b.process(value)
-}
-",
-      ),
-    ])
+  let directory = make_fixture("chain", pure_chain_files())
 
   let assert Ok(Nil) = graded.run_infer(directory)
 
-  // All four modules pure — none should be tagged [Unknown].
   effects_of(read_inferred(directory <> "/priv/graded/app/d.graded"), "format")
   |> should.equal(pure())
 
@@ -239,45 +293,7 @@ pub fn run(value: String) -> String {
 // ----- impure chain (effect propagates through 4 modules) -----
 
 pub fn impure_chain_propagates_effect_to_root_test() {
-  let directory =
-    make_fixture("impure_chain", [
-      #(
-        "app/d.gleam",
-        "import gleam/io
-
-pub fn shout(value: String) -> Nil {
-  io.println(value)
-}
-",
-      ),
-      #(
-        "app/c.gleam",
-        "import app/d
-
-pub fn transform(value: String) -> Nil {
-  d.shout(value)
-}
-",
-      ),
-      #(
-        "app/b.gleam",
-        "import app/c
-
-pub fn process(value: String) -> Nil {
-  c.transform(value)
-}
-",
-      ),
-      #(
-        "app/a.gleam",
-        "import app/b
-
-pub fn run(value: String) -> Nil {
-  b.process(value)
-}
-",
-      ),
-    ])
+  let directory = make_fixture("impure_chain", impure_chain_files())
 
   let assert Ok(Nil) = graded.run_infer(directory)
 
@@ -326,45 +342,7 @@ pub fn shout(value: String) -> String {
 // ----- Risk 2: modules without prior .graded files get .graded files written -----
 
 pub fn infer_writes_graded_files_from_clean_slate_test() {
-  let directory =
-    make_fixture("clean_slate", [
-      #(
-        "app/d.gleam",
-        "import gleam/string
-
-pub fn format(value: String) -> String {
-  string.uppercase(value)
-}
-",
-      ),
-      #(
-        "app/c.gleam",
-        "import app/d
-
-pub fn transform(value: String) -> String {
-  d.format(value)
-}
-",
-      ),
-      #(
-        "app/b.gleam",
-        "import app/c
-
-pub fn process(value: String) -> String {
-  c.transform(value)
-}
-",
-      ),
-      #(
-        "app/a.gleam",
-        "import app/b
-
-pub fn run(value: String) -> String {
-  b.process(value)
-}
-",
-      ),
-    ])
+  let directory = make_fixture("clean_slate", pure_chain_files())
 
   // Sanity: nothing exists yet — Risk 2 starting condition.
   simplifile.is_file(directory <> "/priv/graded/app/a.graded")
@@ -383,52 +361,11 @@ pub fn run(value: String) -> String {
 
 // ----- inference idempotence (the fix's core promise) -----
 
-/// One `run_infer` is now sufficient regardless of chain depth. This test
-/// asserts the *idempotence* property that follows from that: running
-/// `run_infer` a second time must produce byte-identical `.graded` files.
-/// If this ever regresses, it means inference is no longer converging in a
-/// single pass — which is exactly the bug the topological-sort change
-/// fixed.
+/// Pinning the single-pass convergence: a second `run_infer` against the
+/// same project must produce byte-identical `.graded` files. If this
+/// regresses, inference has stopped converging in one pass.
 pub fn run_infer_is_idempotent_test() {
-  let directory =
-    make_fixture("idempotent", [
-      #(
-        "app/d.gleam",
-        "import gleam/io
-
-pub fn shout(value: String) -> Nil {
-  io.println(value)
-}
-",
-      ),
-      #(
-        "app/c.gleam",
-        "import app/d
-
-pub fn transform(value: String) -> Nil {
-  d.shout(value)
-}
-",
-      ),
-      #(
-        "app/b.gleam",
-        "import app/c
-
-pub fn process(value: String) -> Nil {
-  c.transform(value)
-}
-",
-      ),
-      #(
-        "app/a.gleam",
-        "import app/b
-
-pub fn run(value: String) -> Nil {
-  b.process(value)
-}
-",
-      ),
-    ])
+  let directory = make_fixture("idempotent", impure_chain_files())
 
   let assert Ok(Nil) = graded.run_infer(directory)
   let snapshot1 = read_all_graded(directory)
@@ -436,24 +373,18 @@ pub fn run(value: String) -> Nil {
   let assert Ok(Nil) = graded.run_infer(directory)
   let snapshot2 = read_all_graded(directory)
 
-  // Byte-identical: a second pass changes nothing.
   snapshot1 |> should.equal(snapshot2)
 
   cleanup(directory)
 }
 
 fn read_all_graded(directory: String) -> List(#(String, String)) {
-  let priv = directory <> "/priv/graded"
-  case simplifile.get_files(priv) {
+  // simplifile.get_files already returns regular files only — no extra
+  // is_file filter needed.
+  case simplifile.get_files(directory <> "/priv/graded") {
     Error(_) -> []
     Ok(files) ->
       files
-      |> list.filter(fn(f) {
-        case simplifile.is_file(f) {
-          Ok(True) -> True
-          _ -> False
-        }
-      })
       |> list.sort(string.compare)
       |> list.map(fn(path) {
         let assert Ok(content) = simplifile.read(path)
@@ -464,68 +395,57 @@ fn read_all_graded(directory: String) -> List(#(String, String)) {
 
 // ----- path-dep smoke test -----
 
-/// Path dependency inference uses the same topological-sort machinery as
-/// project module inference. This test exercises it directly via the
-/// (test-exposed) `infer_path_dep` function on a fake path-dep tree.
-/// Validates that a 4-module impure chain inside a single path dep
-/// resolves end-to-end in one inference call — the same regression class
-/// as the project chain test, but on the path-dep code path.
+/// Same regression class as the project chain test (deep transitive
+/// effects must propagate in one pass) but exercising the path-dep code
+/// path via the test-exposed `infer_path_dep`.
 pub fn path_dep_chain_resolves_in_one_pass_test() {
-  let dep_path = "/tmp/graded_pathdep_chain"
-  let _ = simplifile.delete(dep_path)
-  let files = [
-    #(
-      "src/dep/d.gleam",
-      "import gleam/io
+  let dep_path =
+    write_fixture("/tmp/graded_pathdep_chain", [
+      #(
+        "src/dep/d.gleam",
+        "import gleam/io
 
 pub fn shout(value: String) -> Nil {
   io.println(value)
 }
 ",
-    ),
-    #(
-      "src/dep/c.gleam",
-      "import dep/d
+      ),
+      #(
+        "src/dep/c.gleam",
+        "import dep/d
 
 pub fn transform(value: String) -> Nil {
   d.shout(value)
 }
 ",
-    ),
-    #(
-      "src/dep/b.gleam",
-      "import dep/c
+      ),
+      #(
+        "src/dep/b.gleam",
+        "import dep/c
 
 pub fn process(value: String) -> Nil {
   c.transform(value)
 }
 ",
-    ),
-    #(
-      "src/dep/a.gleam",
-      "import dep/b
+      ),
+      #(
+        "src/dep/a.gleam",
+        "import dep/b
 
 pub fn run(value: String) -> Nil {
   b.process(value)
 }
 ",
-    ),
-  ]
-  list.each(files, fn(entry) {
-    let #(relative, contents) = entry
-    let full = dep_path <> "/" <> relative
-    let assert Ok(Nil) =
-      simplifile.create_directory_all(filepath.directory_name(full))
-    let assert Ok(Nil) = simplifile.write(full, contents)
-  })
+      ),
+    ])
 
-  // Build an empty knowledge base (loading from a non-existent dir gives
-  // back the catalog without any project externals layered on).
+  // load_knowledge_base from a missing dir falls back to the bundled
+  // catalog (which has io.println marked [Stdout]) without any project
+  // externals layered on.
   let base_kb = effects.load_knowledge_base("nonexistent_packages_dir")
 
   let assert Ok(inferred) = graded.infer_path_dep(dep_path, base_kb)
 
-  // The leaf reaches io.println directly.
   let assert Ok(d_effects) =
     dict.get(inferred, QualifiedName(module: "dep/d", function: "shout"))
   d_effects |> should.equal(Specific(set.from_list(["Stdout"])))
