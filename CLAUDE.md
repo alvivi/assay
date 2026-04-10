@@ -12,24 +12,28 @@ Annotations live in `priv/graded/` alongside Gleam source. The primary consumer 
 
 ```sh
 gleam build    # compile
-gleam test     # run full test suite (147 tests)
-gleam run -m graded check [dir]   # check effect annotations
-gleam run -m graded infer [dir]   # infer and write effect annotations
-gleam run -m graded format [dir]  # format .graded files
+gleam test     # run full test suite
+gleam run -m graded check [dir]            # check effect annotations
+gleam run -m graded infer [dir]            # infer and write effect annotations
+gleam run -m graded format [dir]           # format .graded files
+gleam run -m graded format --check [dir]   # CI mode, exits non-zero on diffs
+gleam run -m graded format --stdin         # editor integration: format from stdin
 ```
+
+Tests use **gleeunit** with **qcheck** property generators in `test/generators.gleam`. Gleam fixture sources live in `test/fixtures/`, with their sidecar `.graded` files under `test/fixtures/priv/graded/`. Integration tests load these real fixtures end-to-end.
 
 ## Architecture
 
-Six modules, no circular dependencies:
+Six modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
-| Module | Responsibility |
+| File | Responsibility |
 |---|---|
-| `types` | Shared types: QualifiedName, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
-| `annotation` | Parse/format `.graded` sidecar files |
-| `effects` | Knowledge base: function/type field -> effect set lookup |
-| `extract` | Walk glance AST, resolve imports, extract calls (resolved, local, field) |
-| `checker` | Collect effects, check subset inclusion, resolve param bounds and field calls |
-| `graded` | CLI entry point: find files, orchestrate, print results |
+| `src/graded.gleam` | CLI entry point + public API: find files, orchestrate, print results |
+| `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
+| `src/graded/internal/annotation.gleam` | Parse/format `.graded` sidecar files |
+| `src/graded/internal/effects.gleam` | Knowledge base: function/type field -> effect set lookup |
+| `src/graded/internal/extract.gleam` | Walk glance AST, resolve imports, extract calls (resolved, local, field) |
+| `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls |
 
 ## .graded Annotation Syntax
 
