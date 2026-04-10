@@ -5,16 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-04-10
+
+### Added
+
+- `[tools.graded]` config table in `gleam.toml`, with `spec_file` and `cache_dir` fields.
+- `graded/internal/topo` module: standalone topological sort over a string-keyed dependency graph, with property and unit tests.
 
 ### Changed
 
-- Project module inference now walks the import graph in topological order (Kahn's algorithm) and runs in a single pass. Replaces the previous two-pass strategy, which left modules at the end of long transitive chains tagged `[Unknown]` until `graded infer` was rerun.
-- Path dependency inference uses the same topological sort, fixing the same convergence issue inside individual path deps. Cross-path-dep imports (one path dep importing from another) are still processed sequentially in declaration order.
-
-### Fixed
-
-- Deep transitive chains (4+ modules) now resolve correctly on the first `graded infer` run regardless of depth. Previously, in a pure chain `a -> b -> c -> d`, the root module `a` could be tagged `[Unknown]` after a single inference pass and required rerunning `graded infer` until convergence — there was no way for users to know how many runs were needed.
+- Project annotations have moved out of `priv/graded/`. Each Gleam package now has a single **spec file at the project root** (default name `<package_name>.graded`, configurable via `[tools.graded].spec_file` in `gleam.toml`) holding the public-API effects, `check` invariants, `external effects` hints, and `type` field annotations. Per-module inferred effects (public + private) live in **`build/.graded/`** as a regenerable build cache (configurable via `[tools.graded].cache_dir`). Both locations are read by `graded check` and written by `graded infer`.
+- Function names in the spec file use the **module-qualified form**: `myapp.view`, `myapp/router.handle_request`. Slashes for the module path, dot before the function name (same convention as `external effects`). Cache files continue to use bare names because each one is implicitly scoped to a module by its file location.
+- Type field annotations gained the same qualification: `type myapp.Handler.on_click : [Dom]`. The bare form (`type Handler.on_click : [Dom]`) remains valid in cache files.
+- Library authors who want their effect annotations to ship to consumers must add their spec file to `included_files` in `gleam.toml`. Without this, downstream packages will not see the library's effects (and will fall back to `[Unknown]` for its functions, unless the catalog covers them).
+- No automatic migration from the old layout. To migrate an existing project: move every `effects`/`check`/`external`/`type` line out of `priv/graded/<module>.graded` into `<package_name>.graded` at the project root, prefixing each function name with its module path. Then run `graded infer` and delete the old `priv/graded/` directory.
 
 ## [0.3.0] - 2026-04-07
 
@@ -52,6 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Versioned catalog system resolved against `manifest.toml`.
 - Catalog entries for `gleam_stdlib`, `gleam_erlang`, `gleam_otp`, `gleam_http`, `gleam_httpc`, `gleam_json`, `gleam_regexp`, `gleam_yielder`, `gleam_crypto`, `lustre`, `lustre_http`, `simplifile`, `filepath`, `tom`.
 
+[0.4.0]: https://github.com/alvivi/graded/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/alvivi/graded/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/alvivi/graded/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/alvivi/graded/releases/tag/v0.1.0

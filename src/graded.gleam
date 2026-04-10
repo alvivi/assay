@@ -497,21 +497,35 @@ fn read_spec(spec_path: String) -> GradedFile {
   }
 }
 
-/// Infer effects for every path dependency declared in `gleam.toml` and
-/// merge the results into the knowledge base. Each path dep is processed
-/// independently in topological order over its own internal import graph,
-/// so deep transitive chains within a path dep resolve in a single pass
-/// (same fix as `run_infer`, applied to dependencies). Cross-path-dep
-/// imports are not currently merged into a single graph — each dep is
-/// processed sequentially, so its inferred effects flow into the knowledge
-/// base before the next dep starts.
+/// For each path dependency declared in `gleam.toml`:
+///
+/// 1. Try to load its spec file (via the dep's own `[tools.graded]`
+///    config, defaulting to `<package_name>.graded`) and fold its
+///    annotations into the knowledge base. This is the fast, intended
+///    path: the dep author already ran `graded infer`, committed the
+///    spec file, and the consumer just reads it.
+///
+/// 2. If the dep has no spec file, fall back to inferring from source via
+///    `infer_path_dep` so path deps without graded set up still work.
+///    Cross-path-dep imports are not currently merged into a single graph
+///    — each dep is processed sequentially.
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
   list.fold(path_deps, knowledge_base, fn(kb, dep) {
-    let #(_name, dep_path) = dep
-    case infer_path_dep(dep_path, kb) {
-      Error(Nil) -> kb
-      Ok(inferred) -> effects.with_inferred(kb, inferred)
+    let #(name, dep_path) = dep
+    let spec_file = case config.read(dep_path <> "/gleam.toml") {
+      Ok(cfg) -> cfg.spec_file
+      Error(_) -> config.default_spec_file(name)
+    }
+    let spec_path = dep_path <> "/" <> spec_file
+    case simplifile.is_file(spec_path) {
+      Ok(True) ->
+        effects.with_inferred(kb, effects.load_spec_effects(spec_path))
+      _ ->
+        case infer_path_dep(dep_path, kb) {
+          Error(Nil) -> kb
+          Ok(inferred) -> effects.with_inferred(kb, inferred)
+        }
     }
   })
 }
@@ -544,8 +558,10 @@ pub fn infer_path_dep(
         read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
       )
       let module_path = extract.module_path_for_source(gleam_path, source_dir)
-      let checks = load_path_dep_checks(dep_path, module_path)
-      Ok(#(module_path, module, checks))
+      // Path-dep checks come from the dep's spec file (loaded by
+      // enrich_with_path_deps), not from per-module files. Inference here
+      // only needs the parsed module.
+      Ok(#(module_path, module, []))
     })
 
   let index =
@@ -592,21 +608,6 @@ fn infer_path_dep_module(
         })
       #(dict.merge(acc, module_dict), effects.with_inferred(kb, module_dict))
     }
-  }
-}
-
-fn load_path_dep_checks(
-  dep_path: String,
-  module_path: String,
-) -> List(types.EffectAnnotation) {
-  let graded_path = dep_path <> "/priv/graded/" <> module_path <> ".graded"
-  case simplifile.read(graded_path) {
-    Error(_) -> []
-    Ok(content) ->
-      case annotation.parse_file(content) {
-        Error(_) -> []
-        Ok(graded_file) -> annotation.extract_checks(graded_file)
-      }
   }
 }
 

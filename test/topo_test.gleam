@@ -391,12 +391,14 @@ pub fn run_infer_is_idempotent_test() {
 }
 
 fn read_all_graded(directory: String) -> List(#(String, String)) {
-  // simplifile.get_files already returns regular files only — no extra
-  // is_file filter needed.
-  case simplifile.get_files(directory <> "/priv/graded") {
+  // Snapshot every .graded file under the test directory: the spec file
+  // at the root plus all the per-module cache files under build/.graded/.
+  // simplifile.get_files already returns regular files only.
+  case simplifile.get_files(directory) {
     Error(_) -> []
     Ok(files) ->
       files
+      |> list.filter(fn(f) { string.ends_with(f, ".graded") })
       |> list.sort(string.compare)
       |> list.map(fn(path) {
         let assert Ok(content) = simplifile.read(path)

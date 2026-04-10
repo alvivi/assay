@@ -6,7 +6,7 @@ This document summarizes research across four areas: Gleam tooling, effect syste
 
 ### glance (v6.0.0)
 
-The primary Gleam parser library, written in Gleam by Louis Pilfold (Gleam's creator). Single entry point: `glance.module(src) -> Result(Module, Error)`.
+The primary Gleam parser library, written in Gleam by the Gleam team. Single entry point: `glance.module(src) -> Result(Module, Error)`.
 
 **What it gives you:**
 - Full module AST: imports, custom types, type aliases, constants, functions
