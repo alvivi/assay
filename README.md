@@ -190,7 +190,7 @@ graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glan
 
 - **No effect polymorphism.** You can't express "this function has whatever effects its argument has." Each `check` annotation declares a specific combination of parameter bounds. There's no way to write a generic `map(f: [e]) : [e]` — you'd need separate annotations for each concrete effect set.
 
-- **Cross-module resolution requires `graded infer` first.** If module A calls module B, B's effects are only available after `graded infer` writes B's `.graded` file. The two-pass inference handles most cases automatically, but deep transitive chains across 3+ modules may need a second `graded infer` run.
+- **Cross-module resolution requires `graded infer` first.** If module A calls module B, B's effects are only available after `graded infer` writes B's `.graded` file. Once `graded infer` has been run, transitive chains of any depth resolve in a single pass — modules are processed in topological order over the import graph, so each module sees its dependencies' effects before being analysed itself.
 
 - **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.graded` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
 

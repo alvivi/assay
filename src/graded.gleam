@@ -258,8 +258,7 @@ fn build_dependency_graph(
 fn topological_sort(
   graph: Dict(String, Set(String)),
 ) -> Result(List(String), GradedError) {
-  let in_degrees =
-    dict.map_values(graph, fn(_node, deps) { set.size(deps) })
+  let in_degrees = dict.map_values(graph, fn(_node, deps) { set.size(deps) })
   let reverse = build_reverse_graph(graph)
   let initial_queue =
     in_degrees
@@ -276,8 +275,7 @@ fn kahn_loop(
 ) -> Result(List(String), GradedError) {
   case queue {
     [] -> {
-      let remaining =
-        dict.filter(in_degrees, fn(_node, degree) { degree > 0 })
+      let remaining = dict.filter(in_degrees, fn(_node, degree) { degree > 0 })
       case dict.is_empty(remaining) {
         True -> Ok(list.reverse(acc))
         False -> Error(CyclicImports(modules: dict.keys(remaining)))
@@ -302,12 +300,10 @@ fn kahn_loop(
             _ -> #(new_degrees, zero_acc)
           }
         })
-      kahn_loop(
-        list.append(rest, newly_zero),
-        new_in_degrees,
-        reverse,
-        [node, ..acc],
-      )
+      kahn_loop(list.append(rest, newly_zero), new_in_degrees, reverse, [
+        node,
+        ..acc
+      ])
     }
   }
 }
@@ -408,80 +404,99 @@ fn infer_one_file(
   Ok(effects.with_inferred(knowledge_base, inferred_dict))
 }
 
+/// Infer effects for every path dependency declared in `gleam.toml` and
+/// merge the results into the knowledge base. Each path dep is processed
+/// independently in topological order over its own internal import graph,
+/// so deep transitive chains within a path dep resolve in a single pass
+/// (same fix as `run_infer`, applied to dependencies). Cross-path-dep
+/// imports are not currently merged into a single graph — each dep is
+/// processed sequentially, so its inferred effects flow into the knowledge
+/// base before the next dep starts.
 fn enrich_with_path_deps(knowledge_base: KnowledgeBase) -> KnowledgeBase {
   let path_deps = effects.parse_path_dependencies("gleam.toml")
-  case path_deps {
-    [] -> knowledge_base
-    _ -> {
-      // Parse source once, infer twice: pass 2 uses pass 1 results
-      // so cross-dep calls resolve.
-      let parsed = parse_path_dep_sources(path_deps)
-      let pass1 = infer_from_parsed_deps(parsed, knowledge_base)
-      let enriched = effects.with_inferred(knowledge_base, pass1)
-      let pass2 = infer_from_parsed_deps(parsed, enriched)
-      effects.with_inferred(knowledge_base, pass2)
+  list.fold(path_deps, knowledge_base, fn(kb, dep) {
+    let #(_name, dep_path) = dep
+    case infer_path_dep(dep_path, kb) {
+      Error(Nil) -> kb
+      Ok(inferred) -> effects.with_inferred(kb, inferred)
     }
-  }
+  })
 }
 
-fn parse_path_dep_sources(
-  path_deps: List(#(String, String)),
-) -> List(List(#(String, glance.Module, List(types.EffectAnnotation)))) {
-  list.map(path_deps, fn(dep) {
-    let #(_name, dep_path) = dep
-    let source_dir = dep_path <> "/src"
-    let gleam_files = case simplifile.get_files(source_dir) {
-      Ok(found) ->
-        list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
-      Error(_) -> []
-    }
+/// Build the dependency-graph index for a single path dep, topo-sort it,
+/// then infer every module in dependency order. Returns the union of all
+/// inferred effects keyed by `QualifiedName` so the caller can fold them
+/// into the global knowledge base. Errors are swallowed (returned as
+/// `Error(Nil)`) to preserve the existing tolerance: a malformed dep
+/// shouldn't break the whole project.
+fn infer_path_dep(
+  dep_path: String,
+  base_kb: KnowledgeBase,
+) -> Result(Dict(QualifiedName, types.EffectSet), Nil) {
+  let source_dir = dep_path <> "/src"
+  let gleam_files = case simplifile.get_files(source_dir) {
+    Ok(found) ->
+      list.filter(found, fn(path) { string.ends_with(path, ".gleam") })
+    Error(_) -> []
+  }
+
+  let entries =
     list.filter_map(gleam_files, fn(gleam_path) {
       use module <- result.try(
         read_and_parse_gleam(gleam_path) |> result.map_error(fn(_) { Nil }),
       )
-      let module_path = source_relative_module(gleam_path, source_dir)
+      let module_path = extract.module_path_for_source(gleam_path, source_dir)
       let checks = load_path_dep_checks(dep_path, module_path)
       Ok(#(module_path, module, checks))
     })
-  })
-}
 
-fn infer_from_parsed_deps(
-  parsed_deps: List(
-    List(#(String, glance.Module, List(types.EffectAnnotation))),
-  ),
-  base_kb: KnowledgeBase,
-) -> dict.Dict(QualifiedName, types.EffectSet) {
-  let result =
-    list.fold(parsed_deps, #(dict.new(), base_kb), fn(state, dep_files) {
-      let #(all_inferred, kb) = state
-      let dep_inferred =
-        list.fold(dep_files, dict.new(), fn(acc, file) {
-          let #(module_path, module, checks) = file
-          let annotations = checker.infer(module, kb, checks)
-          list.fold(annotations, acc, fn(effect_acc, annotation) {
-            dict.insert(
-              effect_acc,
-              QualifiedName(module: module_path, function: annotation.function),
-              annotation.effects,
-            )
-          })
-        })
-      #(
-        dict.merge(all_inferred, dep_inferred),
-        effects.with_inferred(kb, dep_inferred),
-      )
+  let index =
+    list.fold(entries, dict.new(), fn(acc, entry) {
+      let #(module_path, module, checks) = entry
+      dict.insert(acc, module_path, #(module, checks))
     })
-  result.0
+
+  let graph =
+    dict.map_values(index, fn(_module_path, entry) {
+      let #(module, _checks) = entry
+      let context = extract.build_import_context(module)
+      context.aliases
+      |> dict.values()
+      |> list.filter(fn(imported) { dict.has_key(index, imported) })
+      |> set.from_list()
+    })
+
+  use sorted <- result.try(
+    topological_sort(graph) |> result.map_error(fn(_) { Nil }),
+  )
+  let #(inferred, _final_kb) =
+    list.fold(sorted, #(dict.new(), base_kb), fn(state, module_path) {
+      infer_path_dep_module(state, module_path, index)
+    })
+  Ok(inferred)
 }
 
-fn source_relative_module(gleam_path: String, source_dir: String) -> String {
-  let prefix = source_dir <> "/"
-  let relative = case string.starts_with(gleam_path, prefix) {
-    True -> string.drop_start(gleam_path, string.length(prefix))
-    False -> gleam_path
+fn infer_path_dep_module(
+  state: #(Dict(QualifiedName, types.EffectSet), KnowledgeBase),
+  module_path: String,
+  index: Dict(String, #(glance.Module, List(types.EffectAnnotation))),
+) -> #(Dict(QualifiedName, types.EffectSet), KnowledgeBase) {
+  let #(acc, kb) = state
+  case dict.get(index, module_path) {
+    Error(_) -> #(acc, kb)
+    Ok(#(module, checks)) -> {
+      let annotations = checker.infer(module, kb, checks)
+      let module_dict =
+        list.fold(annotations, dict.new(), fn(d, annotation) {
+          dict.insert(
+            d,
+            QualifiedName(module: module_path, function: annotation.function),
+            annotation.effects,
+          )
+        })
+      #(dict.merge(acc, module_dict), effects.with_inferred(kb, module_dict))
+    }
   }
-  string.replace(relative, ".gleam", "")
 }
 
 fn load_path_dep_checks(

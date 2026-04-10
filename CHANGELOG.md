@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Project module inference now walks the import graph in topological order (Kahn's algorithm) and runs in a single pass. Replaces the previous two-pass strategy, which left modules at the end of long transitive chains tagged `[Unknown]` until `graded infer` was rerun.
+- Path dependency inference uses the same topological sort, fixing the same convergence issue inside individual path deps. Cross-path-dep imports (one path dep importing from another) are still processed sequentially in declaration order.
+
+### Fixed
+
+- Deep transitive chains (4+ modules) now resolve correctly on the first `graded infer` run regardless of depth. Previously, in a pure chain `a -> b -> c -> d`, the root module `a` could be tagged `[Unknown]` after a single inference pass and required rerunning `graded infer` until convergence — there was no way for users to know how many runs were needed.
+
 ## [0.3.0] - 2026-04-07
 
 ### Added
