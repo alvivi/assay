@@ -2,6 +2,7 @@ import generators
 import glance
 import gleam/dict
 import gleam/list
+import gleam/option.{None}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -278,9 +279,10 @@ pub fn field_call_typed_with_registry_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
   let type_fields = [
     types.TypeFieldAnnotation(
-      "Handler",
-      "on_click",
-      Specific(set.from_list(["Dom"])),
+      module: None,
+      type_name: "Handler",
+      field: "on_click",
+      effects: Specific(set.from_list(["Dom"])),
     ),
   ]
   let annotation =
@@ -294,9 +296,10 @@ pub fn field_call_violates_check_test() {
   let source = "pub fn view(handler: Handler) { handler.on_click(event) }"
   let type_fields = [
     types.TypeFieldAnnotation(
-      "Handler",
-      "on_click",
-      Specific(set.from_list(["Dom"])),
+      module: None,
+      type_name: "Handler",
+      field: "on_click",
+      effects: Specific(set.from_list(["Dom"])),
     ),
   ]
   let annotation = EffectAnnotation(Check, "view", [], Specific(set.new()))

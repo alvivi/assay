@@ -1,6 +1,7 @@
 import generators
 import gleam/dict
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/set
 import gleeunit/should
 import graded/internal/annotation
@@ -248,9 +249,44 @@ pub fn parse_type_field_multiple_effects_test() {
 
 pub fn format_type_field_test() {
   let tf =
-    TypeFieldAnnotation("Handler", "on_click", Specific(set.from_list(["Dom"])))
+    TypeFieldAnnotation(
+      module: None,
+      type_name: "Handler",
+      field: "on_click",
+      effects: Specific(set.from_list(["Dom"])),
+    )
   annotation.format_type_field(tf)
   |> should.equal("type Handler.on_click : [Dom]")
+}
+
+pub fn format_type_field_qualified_test() {
+  let tf =
+    TypeFieldAnnotation(
+      module: Some("myapp/router"),
+      type_name: "Handler",
+      field: "on_click",
+      effects: Specific(set.from_list(["Dom"])),
+    )
+  annotation.format_type_field(tf)
+  |> should.equal("type myapp/router.Handler.on_click : [Dom]")
+}
+
+pub fn parse_type_field_qualified_test() {
+  let input = "type myapp/router.Handler.on_click : [Dom]"
+  let assert Ok(file) = annotation.parse_file(input)
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(Some("myapp/router"))
+  tf.type_name |> should.equal("Handler")
+  tf.field |> should.equal("on_click")
+}
+
+pub fn parse_type_field_qualified_deep_module_test() {
+  let input = "type deeply/nested/path.Config.validator : []"
+  let assert Ok(file) = annotation.parse_file(input)
+  let assert [tf] = annotation.extract_type_fields(file)
+  tf.module |> should.equal(Some("deeply/nested/path"))
+  tf.type_name |> should.equal("Config")
+  tf.field |> should.equal("validator")
 }
 
 // --- External annotations ---

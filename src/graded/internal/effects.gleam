@@ -6,6 +6,7 @@ import gleam/result
 import gleam/set.{type Set}
 import gleam/string
 import graded/internal/annotation
+import graded/internal/config
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type ExternalAnnotation,
   type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
@@ -192,42 +193,53 @@ pub fn parse_path_dependencies(
   result.unwrap(parsed, [])
 }
 
-/// Load inferred effects from the project's own .graded files.
-/// Returns a dict of function effects for use with `with_inferred`.
-pub fn load_project_effects(
-  source_directory: String,
+/// Load inferred effects from a package's spec file. The spec file uses
+/// module-qualified function names (e.g. `myapp/router.handle`) so each
+/// `effects` annotation maps directly to a `QualifiedName` without needing
+/// to know which file it came from. Returns an empty dict when the spec
+/// file is missing or unparseable.
+pub fn load_spec_effects(spec_path: String) -> Dict(QualifiedName, EffectSet) {
+  case read_spec_annotations(spec_path) {
+    Error(_) -> dict.new()
+    Ok(annotations) -> fold_spec_effects(annotations)
+  }
+}
+
+/// Same as `load_spec_effects` but takes an already-parsed GradedFile,
+/// avoiding a second read+parse when the caller already has the spec file
+/// in hand.
+pub fn load_spec_effects_from_file(
+  file: types.GradedFile,
 ) -> Dict(QualifiedName, EffectSet) {
-  let graded_directory = case source_directory {
-    "src" -> "priv/graded"
-    _ -> source_directory <> "/priv/graded"
-  }
-  let files = case simplifile.get_files(graded_directory) {
-    Ok(found) -> list.filter(found, fn(f) { string.ends_with(f, ".graded") })
-    Error(_) -> []
-  }
-  list.fold(files, dict.new(), fn(acc, file_path) {
-    let parsed =
-      simplifile.read(file_path)
-      |> result.map_error(fn(_) { Nil })
-      |> result.try(fn(content) {
-        annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
-      })
-    case parsed {
-      Error(_) -> acc
-      Ok(graded_file) -> {
-        let module_path = file_path_to_module(file_path, graded_directory)
-        annotation.extract_annotations(graded_file)
-        |> list.filter(fn(a) { a.kind == Effects })
-        |> list.fold(acc, fn(inner_acc, ann) {
-          dict.insert(
-            inner_acc,
-            QualifiedName(module: module_path, function: ann.function),
-            ann.effects,
-          )
-        })
-      }
+  fold_spec_effects(annotation.extract_annotations(file))
+}
+
+fn fold_spec_effects(
+  annotations: List(EffectAnnotation),
+) -> Dict(QualifiedName, EffectSet) {
+  list.fold(annotations, dict.new(), fn(acc, ann) {
+    case ann.kind {
+      Effects ->
+        case annotation.split_qualified_name(ann.function) {
+          Ok(#(module, function)) ->
+            dict.insert(acc, QualifiedName(module:, function:), ann.effects)
+          Error(_) -> acc
+        }
+      Check -> acc
     }
   })
+}
+
+fn read_spec_annotations(
+  spec_path: String,
+) -> Result(List(EffectAnnotation), Nil) {
+  use content <- result.try(
+    simplifile.read(spec_path) |> result.replace_error(Nil),
+  )
+  use file <- result.try(
+    annotation.parse_file(content) |> result.replace_error(Nil),
+  )
+  Ok(annotation.extract_annotations(file))
 }
 
 /// Merge inferred effects into a knowledge base.
@@ -242,6 +254,12 @@ pub fn with_inferred(
 
 // PRIVATE
 
+/// For each installed package, locate its spec file via the package's own
+/// `[tools.graded]` config (defaulting to `<package_name>.graded`), parse
+/// its qualified `effects` and `check` annotations, and fold them into the
+/// global effect / param maps. Packages with no spec file are silently
+/// skipped — same fail-soft semantics as the catalog and the old
+/// per-module reader.
 fn load_dependency_effects(
   packages_directory: String,
 ) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
@@ -250,76 +268,53 @@ fn load_dependency_effects(
     Error(_) -> []
   }
   list.fold(entries, #(dict.new(), dict.new()), fn(maps, package_name) {
-    let graded_directory =
-      packages_directory <> "/" <> package_name <> "/priv/graded"
-    let files = case simplifile.get_files(graded_directory) {
-      Ok(found) -> found
-      Error(_) -> []
+    let dep_root = packages_directory <> "/" <> package_name
+    let spec_file = case config.read(dep_root <> "/gleam.toml") {
+      Ok(cfg) -> cfg.spec_file
+      Error(_) -> config.default_spec_file(package_name)
     }
-    list.fold(files, maps, fn(inner_maps, file_path) {
-      case string.ends_with(file_path, ".graded") {
-        True -> load_graded_file(inner_maps, file_path, graded_directory)
-        False -> inner_maps
-      }
-    })
+    load_spec_into_maps(maps, dep_root <> "/" <> spec_file)
   })
 }
 
-fn load_graded_file(
+fn load_spec_into_maps(
   maps: #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))),
-  file_path: String,
-  graded_directory: String,
+  spec_path: String,
 ) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
-  let parsed =
-    simplifile.read(file_path)
-    |> result.map_error(fn(_) { Nil })
-    |> result.try(fn(content) {
-      annotation.parse_file(content) |> result.map_error(fn(_) { Nil })
-    })
-  case parsed {
+  case read_spec_annotations(spec_path) {
     Error(_) -> maps
-    Ok(graded_file) -> {
-      let module_path = file_path_to_module(file_path, graded_directory)
-      let #(effect_map, param_map) = maps
-      annotation.extract_annotations(graded_file)
-      |> list.fold(#(effect_map, param_map), fn(accumulator, annotation) {
-        fold_annotation(accumulator, annotation, module_path)
-      })
-    }
+    Ok(annotations) -> list.fold(annotations, maps, fold_qualified_annotation)
   }
 }
 
-fn fold_annotation(
+fn fold_qualified_annotation(
   accumulator: #(
     Dict(QualifiedName, EffectSet),
     Dict(QualifiedName, List(ParamBound)),
   ),
-  annotation: EffectAnnotation,
-  module_path: String,
+  ann: EffectAnnotation,
 ) -> #(Dict(QualifiedName, EffectSet), Dict(QualifiedName, List(ParamBound))) {
   let #(effect_map, param_map) = accumulator
-  let qualified_name =
-    QualifiedName(module: module_path, function: annotation.function)
-  case annotation.kind {
-    Effects -> #(
-      dict.insert(effect_map, qualified_name, annotation.effects),
-      param_map,
-    )
-    Check ->
-      case annotation.params {
-        [] -> accumulator
-        params -> #(effect_map, dict.insert(param_map, qualified_name, params))
+  case annotation.split_qualified_name(ann.function) {
+    Error(_) -> accumulator
+    Ok(#(module, function)) -> {
+      let qualified_name = QualifiedName(module:, function:)
+      case ann.kind {
+        Effects -> #(
+          dict.insert(effect_map, qualified_name, ann.effects),
+          param_map,
+        )
+        Check ->
+          case ann.params {
+            [] -> accumulator
+            params -> #(
+              effect_map,
+              dict.insert(param_map, qualified_name, params),
+            )
+          }
       }
+    }
   }
-}
-
-fn file_path_to_module(path: String, graded_directory: String) -> String {
-  let prefix = graded_directory <> "/"
-  let relative = case string.starts_with(path, prefix) {
-    True -> string.drop_start(path, string.length(prefix))
-    False -> path
-  }
-  string.replace(relative, ".graded", "")
 }
 
 fn find_catalog_directory() -> String {

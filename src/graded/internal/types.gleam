@@ -1,4 +1,5 @@
 import glance.{type Span}
+import gleam/option.{type Option}
 import gleam/set.{type Set}
 
 /// A fully qualified function name: module path + function name.
@@ -102,8 +103,18 @@ pub type FieldCall {
 }
 
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
+///
+/// `module` is `Some(...)` when the annotation comes from a spec file (one
+/// file per package, qualified names like `myapp.Handler.on_click`) and
+/// `None` when it comes from a per-module cache file (bare names scoped to
+/// the file's module by location).
 pub type TypeFieldAnnotation {
-  TypeFieldAnnotation(type_name: String, field: String, effects: EffectSet)
+  TypeFieldAnnotation(
+    module: Option(String),
+    type_name: String,
+    field: String,
+    effects: EffectSet,
+  )
 }
 
 /// Whether an external targets a whole module or a specific function.

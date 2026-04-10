@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/list
+import gleam/option.{None}
 import gleam/set
 import graded/internal/types.{
   type EffectSet, AnnotationLine, BlankLine, Check, CommentLine,
@@ -89,7 +90,7 @@ pub fn type_field_gen() -> qcheck.Generator(types.TypeFieldAnnotation) {
     effect_set_gen(),
     fn(tf, effects) {
       let #(type_name, field) = tf
-      TypeFieldAnnotation(type_name:, field:, effects:)
+      TypeFieldAnnotation(module: None, type_name:, field:, effects:)
     },
   )
 }

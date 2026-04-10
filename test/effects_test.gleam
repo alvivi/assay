@@ -57,47 +57,41 @@ pub fn format_wildcard_set_test() {
   effects.format_effect_set(Wildcard) |> should.equal("[_]")
 }
 
-// ──── Project Effects ────
+// ──── Spec File Effects ────
 
-pub fn load_project_effects_test() {
-  // Write temporary .graded files
-  let dir = "test/tmp_project_effects"
-  let graded_dir = dir <> "/priv/graded"
-  let assert Ok(Nil) = simplifile.create_directory_all(graded_dir <> "/myapp")
+pub fn load_spec_effects_test() {
+  let spec_path = "/tmp/graded_load_spec_effects.graded"
+  let _ = simplifile.delete(spec_path)
   let assert Ok(Nil) =
     simplifile.write(
-      graded_dir <> "/myapp/currency.graded",
-      "effects from_string : []\neffects to_string : []\n",
-    )
-  let assert Ok(Nil) =
-    simplifile.write(
-      graded_dir <> "/myapp/api.graded",
-      "effects handle : [Http]\ncheck handle : [Http]\n",
+      spec_path,
+      "effects myapp/currency.from_string : []
+effects myapp/currency.to_string : []
+effects myapp/api.handle : [Http]
+check myapp/api.handle : [Http]
+",
     )
 
-  let project_effects = effects.load_project_effects(dir)
+  let spec_effects = effects.load_spec_effects(spec_path)
 
-  // Should load effects annotations
-  dict.get(project_effects, QualifiedName("myapp/currency", "from_string"))
+  dict.get(spec_effects, QualifiedName("myapp/currency", "from_string"))
   |> should.equal(Ok(Specific(set.new())))
 
-  dict.get(project_effects, QualifiedName("myapp/currency", "to_string"))
+  dict.get(spec_effects, QualifiedName("myapp/currency", "to_string"))
   |> should.equal(Ok(Specific(set.new())))
 
-  dict.get(project_effects, QualifiedName("myapp/api", "handle"))
+  dict.get(spec_effects, QualifiedName("myapp/api", "handle"))
   |> should.equal(Ok(Specific(set.from_list(["Http"]))))
 
-  // Should NOT load check annotations as effects
-  // (check annotations are loaded separately per-file)
-  let size = dict.size(project_effects)
-  size |> should.equal(3)
+  // `check` lines are NOT loaded as effects — only `effects` lines are.
+  dict.size(spec_effects) |> should.equal(3)
 
-  // Clean up
-  let assert Ok(Nil) = simplifile.delete_all([dir])
+  let _ = simplifile.delete(spec_path)
+  Nil
 }
 
-pub fn load_project_effects_empty_test() {
-  effects.load_project_effects("nonexistent_dir")
+pub fn load_spec_effects_missing_file_test() {
+  effects.load_spec_effects("/tmp/graded_does_not_exist.graded")
   |> dict.size()
   |> should.equal(0)
 }

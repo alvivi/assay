@@ -201,9 +201,9 @@ Secret > Confidential > Internal > Public
 The rule: data at level L must not flow to a context at level < L.
 
 ```
-// priv/graded/app.graded
-privacy user.email : Confidential
-privacy io.println : Public
+// app.graded — at the project root
+privacy app.user.email : Confidential
+privacy gleam/io.println : Public
 ```
 
 If `log_request` passes `user.email` (Confidential) to `io.println` (Public):
