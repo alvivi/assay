@@ -172,7 +172,7 @@ fn extract_from_expression(
   context: ImportContext,
 ) -> ExtractResult {
   case expression {
-    // Qualified call: io.println(x)
+    // Qualified call: io.println(x), or qualified type constructor: types.NotFound(id)
     glance.Call(
       location: span,
       function: glance.FieldAccess(
@@ -182,27 +182,35 @@ fn extract_from_expression(
       ),
       arguments:,
     ) -> {
-      let call_result = case dict.get(context.aliases, alias) {
-        Ok(module_path) ->
-          ExtractResult(
-            resolved: [
-              ResolvedCall(QualifiedName(module_path, function_name), span),
-            ],
-            local: [],
-            field: [],
-            references: [],
-          )
-        Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [
-              FieldCall(alias, function_name, span),
-            ],
-            references: [],
-          )
+      case is_constructor_name(function_name) {
+        // Type constructor — pure value creation. Skip the lookup but
+        // still walk the arguments so any side-effecting sub-expressions
+        // (e.g. NotFound(io.println(x))) are still counted.
+        True -> extract_from_arguments(arguments, context)
+        False -> {
+          let call_result = case dict.get(context.aliases, alias) {
+            Ok(module_path) ->
+              ExtractResult(
+                resolved: [
+                  ResolvedCall(QualifiedName(module_path, function_name), span),
+                ],
+                local: [],
+                field: [],
+                references: [],
+              )
+            Error(Nil) ->
+              ExtractResult(
+                resolved: [],
+                local: [],
+                field: [
+                  FieldCall(alias, function_name, span),
+                ],
+                references: [],
+              )
+          }
+          merge(call_result, extract_from_arguments(arguments, context))
+        }
       }
-      merge(call_result, extract_from_arguments(arguments, context))
     }
 
     // Unqualified or local call: println(x) or helper(x)
@@ -262,18 +270,23 @@ fn extract_from_expression(
     // Record update
     glance.RecordUpdate(record:, ..) -> extract_from_expression(record, context)
 
-    // Function reference: qualified name used as a value (not called)
+    // Function reference: qualified name used as a value (not called).
+    // Qualified type constructors used as values are pure and not tracked.
     glance.FieldAccess(
       location: span,
       container: glance.Variable(_, alias),
       label: function_name,
     ) ->
-      case dict.get(context.aliases, alias) {
-        Ok(module_path) ->
-          ExtractResult(resolved: [], local: [], field: [], references: [
-            ResolvedCall(QualifiedName(module_path, function_name), span),
-          ])
-        Error(Nil) -> empty()
+      case is_constructor_name(function_name) {
+        True -> empty()
+        False ->
+          case dict.get(context.aliases, alias) {
+            Ok(module_path) ->
+              ExtractResult(resolved: [], local: [], field: [], references: [
+                ResolvedCall(QualifiedName(module_path, function_name), span),
+              ])
+            Error(Nil) -> empty()
+          }
       }
 
     // Other field access (not a call — just traversing)
@@ -333,25 +346,29 @@ fn extract_pipe_target(
       container: glance.Variable(_, alias),
       label: function_name,
     ) ->
-      case dict.get(context.aliases, alias) {
-        Ok(module_path) ->
-          ExtractResult(
-            resolved: [
-              ResolvedCall(QualifiedName(module_path, function_name), span),
-            ],
-            local: [],
-            field: [],
-            references: [],
-          )
-        Error(Nil) ->
-          ExtractResult(
-            resolved: [],
-            local: [],
-            field: [
-              FieldCall(alias, function_name, span),
-            ],
-            references: [],
-          )
+      case is_constructor_name(function_name) {
+        True -> empty()
+        False ->
+          case dict.get(context.aliases, alias) {
+            Ok(module_path) ->
+              ExtractResult(
+                resolved: [
+                  ResolvedCall(QualifiedName(module_path, function_name), span),
+                ],
+                local: [],
+                field: [],
+                references: [],
+              )
+            Error(Nil) ->
+              ExtractResult(
+                resolved: [],
+                local: [],
+                field: [
+                  FieldCall(alias, function_name, span),
+                ],
+                references: [],
+              )
+          }
       }
 
     glance.Variable(location: span, name:) ->

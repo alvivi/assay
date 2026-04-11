@@ -446,6 +446,76 @@ pub fn total(a: String, b: String) -> String {
   cleanup(directory)
 }
 
+// ----- cross-module type constructors are pure -----
+
+/// Calls to a custom type constructor defined in a sibling project
+/// module should be inferred as pure, regardless of position: as a
+/// direct call, at a pipe target, or as a value reference. Side
+/// effects inside a constructor's argument list must still propagate.
+/// All four positions are exercised against one fixture and one
+/// `run_infer` invocation; each function name isolates the case.
+pub fn cross_module_type_constructors_resolve_pure_test() {
+  let directory =
+    make_fixture("cross_module_constructors", [
+      #(
+        "myapp/types.gleam",
+        "pub type MyError {
+  NotFound(id: String)
+}
+
+pub type Logged {
+  Logged(message: String)
+}
+",
+      ),
+      #(
+        "myapp/service.gleam",
+        "import gleam/io
+import myapp/types
+
+pub fn lookup(id: String) -> Result(Nil, types.MyError) {
+  Error(types.NotFound(id))
+}
+
+pub fn pipe_lookup(id: String) -> types.MyError {
+  id |> types.NotFound
+}
+
+pub fn make(message: String) -> types.Logged {
+  io.println(message)
+  types.Logged(message)
+}
+
+pub fn maker() -> fn(String) -> types.MyError {
+  types.NotFound
+}
+",
+      ),
+    ])
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  let inferred =
+    read_inferred(directory <> "/build/.graded/myapp/service.graded")
+
+  // Direct call: types.NotFound(id) — pure.
+  effects_of(inferred, "lookup") |> should.equal(pure())
+
+  // Pipe target: id |> types.NotFound — pure.
+  effects_of(inferred, "pipe_lookup") |> should.equal(pure())
+
+  // Argument-list effects propagate even though the wrapping
+  // constructor itself is pure.
+  effects_of(inferred, "make") |> should.equal(with_labels(["Stdout"]))
+
+  // Value position: types.NotFound used as a function reference.
+  // Currently `references` aren't fed into inference, so this passes
+  // pre-fix as well — kept to pin the contract if that ever changes.
+  effects_of(inferred, "maker") |> should.equal(pure())
+
+  cleanup(directory)
+}
+
 // ----- path-dep smoke test -----
 
 /// Same regression class as the project chain test (deep transitive
