@@ -407,6 +407,45 @@ fn read_all_graded(directory: String) -> List(#(String, String)) {
   }
 }
 
+// ----- spec-file externals are honoured during inference -----
+
+/// Regression: a project module that calls into a third-party package not
+/// in the catalog should pick up the spec file's `external effects` line
+/// during `run_infer`, not fall back to `[Unknown]`. Pre-fix, externals
+/// were only consumed by `run` (check), so `infer` produced a noisy spec
+/// even when the user had already declared the dependency pure.
+pub fn run_infer_honours_spec_file_externals_test() {
+  let directory =
+    make_fixture("externals_in_infer", [
+      #(
+        "app/main.gleam",
+        "import dee/decimal
+
+pub fn total(a: String, b: String) -> String {
+  decimal.add(a, b)
+}
+",
+      ),
+    ])
+
+  // Mirror the user's setup: spec file at <root>/<basename>.graded
+  // declares the third-party module as pure via `external effects`.
+  let spec_path = directory <> "/graded_topo_externals_in_infer.graded"
+  let assert Ok(Nil) =
+    simplifile.write(spec_path, "external effects dee/decimal : []\n")
+
+  let assert Ok(Nil) = graded.run_infer(directory)
+
+  // The crucial assertion: total is inferred as pure, not [Unknown].
+  effects_of(
+    read_inferred(directory <> "/build/.graded/app/main.graded"),
+    "total",
+  )
+  |> should.equal(pure())
+
+  cleanup(directory)
+}
+
 // ----- path-dep smoke test -----
 
 /// Same regression class as the project chain test (deep transitive
