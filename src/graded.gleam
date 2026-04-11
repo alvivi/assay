@@ -161,9 +161,12 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 /// resolves transitive chains of any depth.
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let cfg = read_config(directory)
+  let spec = read_spec(cfg.spec_file)
   let base_kb =
     effects.load_knowledge_base("build/packages")
     |> enrich_with_path_deps()
+    |> effects.with_externals(annotation.extract_externals(spec))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
@@ -198,7 +201,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
     }),
   )
 
-  write_spec_file(cfg.spec_file, public_annotations)
+  write_spec_file(cfg.spec_file, spec, public_annotations)
 }
 
 /// Format the project's spec file in place. The spec file is the single
@@ -354,9 +357,10 @@ fn public_function_names(module: glance.Module) -> set.Set(String) {
 /// public-function annotations, and writes the result back.
 fn write_spec_file(
   spec_path: String,
+  existing: GradedFile,
   inferred: List(EffectAnnotation),
 ) -> Result(Nil, GradedError) {
-  let merged = annotation.merge_inferred(read_spec(spec_path), inferred)
+  let merged = annotation.merge_inferred(existing, inferred)
 
   // create_directory_all is a no-op when the parent already exists, so it's
   // safe to call unconditionally — and necessary when the user has
