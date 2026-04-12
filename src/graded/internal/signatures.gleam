@@ -112,18 +112,15 @@ fn package_interface_decoder() -> decode.Decoder(SignatureRegistry) {
     decode.dict(decode.string, module_decoder()),
   )
   let signatures =
-    modules
-    |> dict.to_list()
-    |> list.flat_map(fn(entry) {
-      let #(module_path, functions) = entry
-      functions
-      |> dict.to_list()
-      |> list.map(fn(fn_entry) {
-        let #(fn_name, params) = fn_entry
-        #(QualifiedName(module: module_path, function: fn_name), params)
+    dict.fold(modules, dict.new(), fn(acc, module_path, functions) {
+      dict.fold(functions, acc, fn(inner, fn_name, params) {
+        dict.insert(
+          inner,
+          QualifiedName(module: module_path, function: fn_name),
+          params,
+        )
       })
     })
-    |> dict.from_list()
   decode.success(SignatureRegistry(signatures:))
 }
 

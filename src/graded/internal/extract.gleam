@@ -413,21 +413,19 @@ fn extract_pipe_target(
       location: span,
       container: glance.Variable(_, alias),
       label: function_name,
-    ) -> {
-      let base = resolve_qualified_call(alias, function_name, span, context)
-      ExtractResult(
-        ..base,
-        call_args: dict.insert(base.call_args, span.start, pipe_args),
+    ) ->
+      attach_pipe_args(
+        resolve_qualified_call(alias, function_name, span, context),
+        span,
+        pipe_args,
       )
-    }
 
-    glance.Variable(location: span, name:) -> {
-      let base = resolve_unqualified_call(name, span, context)
-      ExtractResult(
-        ..base,
-        call_args: dict.insert(base.call_args, span.start, pipe_args),
+    glance.Variable(location: span, name:) ->
+      attach_pipe_args(
+        resolve_unqualified_call(name, span, context),
+        span,
+        pipe_args,
       )
-    }
 
     // `left |> right(args)` — the piped value is the first argument
     // and the explicit args shift up by one.
@@ -522,6 +520,20 @@ fn classify_expression(
       }
     _ -> OtherExpression
   }
+}
+
+/// Record a pipe target's argument list against its call span. Used
+/// by the two pipe-target shapes (`|> foo.bar` and `|> bar`) that
+/// don't go through `merge_with_args`.
+fn attach_pipe_args(
+  base: ExtractResult,
+  span: glance.Span,
+  pipe_args: List(CallArgument),
+) -> ExtractResult {
+  ExtractResult(
+    ..base,
+    call_args: dict.insert(base.call_args, span.start, pipe_args),
+  )
 }
 
 /// Merge an extraction result with a call's sub-expression walk, and

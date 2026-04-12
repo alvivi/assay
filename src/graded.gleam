@@ -136,15 +136,21 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let registry = build_project_registry(index)
 
   let results =
-    list.map(gleam_files, fn(gleam_path) {
+    list.map(parsed, fn(entry) {
+      let #(gleam_path, module) = entry
       let module_path = extract.module_path_for_source(gleam_path, directory)
       let module_checks = case dict.get(checks_by_module, module_path) {
         Ok(list) -> list
         Error(_) -> []
       }
-      check_one_file(gleam_path, module_checks, knowledge_base, registry)
+      check_one_file(
+        gleam_path,
+        module,
+        module_checks,
+        knowledge_base,
+        registry,
+      )
     })
-    |> list.filter_map(fn(result) { result })
 
   Ok(results)
 }
@@ -442,16 +448,14 @@ fn checks_grouped_by_module(
 /// annotations from the spec file that mention this file's module.
 fn check_one_file(
   gleam_path: String,
+  module: glance.Module,
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-) -> Result(CheckResult, Nil) {
-  use module <- result.try(
-    read_and_parse_gleam(gleam_path) |> result.replace_error(Nil),
-  )
+) -> CheckResult {
   let #(violations, warnings) =
     checker.check(module, module_checks, knowledge_base, registry)
-  Ok(CheckResult(file: gleam_path, violations:, warnings:))
+  CheckResult(file: gleam_path, violations:, warnings:)
 }
 
 /// Read the project's `[tools.graded]` config and return spec/cache paths
