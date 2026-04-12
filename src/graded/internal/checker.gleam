@@ -1,4 +1,5 @@
 import glance.{type Definition, type Function, type Module}
+import gleam/bool
 import gleam/dict
 import gleam/list
 import gleam/option.{None, Some}
@@ -333,26 +334,19 @@ fn substitute_at_call_site(
   caller_param_bounds: List(ParamBound),
   registry: SignatureRegistry,
 ) -> EffectSet {
-  case types.has_variables(effect_set) {
-    False -> effect_set
-    True -> {
-      let callee_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
-      let args = case dict.get(call_args, call.span.start) {
-        Ok(a) -> a
-        Error(Nil) -> []
-      }
-      let bindings =
-        bind_variables(
-          call.name,
-          callee_bounds,
-          args,
-          knowledge_base,
-          caller_param_bounds,
-          registry,
-        )
-      types.substitute(effect_set, bindings)
-    }
-  }
+  use <- bool.guard(when: !types.has_variables(effect_set), return: effect_set)
+  let callee_bounds = effects.lookup_param_bounds(knowledge_base, call.name)
+  let args = dict.get(call_args, call.span.start) |> result.unwrap([])
+  let bindings =
+    bind_variables(
+      call.name,
+      callee_bounds,
+      args,
+      knowledge_base,
+      caller_param_bounds,
+      registry,
+    )
+  types.substitute(effect_set, bindings)
 }
 
 /// Match arguments against a callee's param bounds and produce a
@@ -407,51 +401,36 @@ fn find_matching_arg(
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
-  // Label-based match first — works whenever the caller used the
-  // parameter label explicitly.
-  case
-    list.find(args, fn(arg) {
-      case arg.label {
-        Some(l) -> l == bound.name
-        None -> False
-      }
-    })
-  {
-    Ok(arg) -> Some(arg)
-    Error(Nil) -> {
-      // Positional: if the callee is in the signature registry, use
-      // the parameter's real position in the full signature. This
-      // correctly handles callers that pass the argument without a
-      // label, e.g. `validate_range(42, OutOfRange)`.
-      case position_from_registry(callee_name, bound.name, registry) {
-        Some(pos) ->
-          case
-            list.find(args, fn(arg) { arg.position == pos && arg.label == None })
-          {
-            Ok(arg) -> Some(arg)
-            Error(Nil) -> None
-          }
-        None ->
-          // Fallback for callees without a registry entry (e.g. deps
-          // with only a spec file, no package-interface JSON loaded).
-          // Use the bound's index within the bounds list — correct
-          // only when every parameter has a bound, but preserves the
-          // pre-registry behavior.
-          case find_bound_index(bound, all_bounds, 0) {
-            Some(i) ->
-              case
-                list.find(args, fn(arg) {
-                  arg.position == i && arg.label == None
-                })
-              {
-                Ok(arg) -> Some(arg)
-                Error(Nil) -> None
-              }
-            None -> None
-          }
-      }
-    }
-  }
+  // Try three strategies in order:
+  //   1. Label match (caller used an explicit argument label)
+  //   2. Registry-backed position (authoritative when available)
+  //   3. Fall back to the bound's index in the bounds list — only
+  //      correct when every parameter has a bound, but preserves
+  //      pre-registry behavior for dep callees.
+  let by_label = find_arg_by_label(args, bound.name)
+  use <- option.lazy_or(by_label)
+  let by_position =
+    position_from_registry(callee_name, bound.name, registry)
+    |> option.then(fn(pos) { find_arg_at_position(args, pos) })
+  use <- option.lazy_or(by_position)
+  find_bound_index(bound, all_bounds, 0)
+  |> option.then(fn(i) { find_arg_at_position(args, i) })
+}
+
+fn find_arg_by_label(
+  args: List(types.CallArgument),
+  label: String,
+) -> option.Option(types.CallArgument) {
+  list.find(args, fn(arg) { arg.label == Some(label) })
+  |> option.from_result
+}
+
+fn find_arg_at_position(
+  args: List(types.CallArgument),
+  position: Int,
+) -> option.Option(types.CallArgument) {
+  list.find(args, fn(arg) { arg.position == position && arg.label == None })
+  |> option.from_result
 }
 
 /// Look up the real parameter position of a named parameter in the
@@ -462,36 +441,24 @@ fn position_from_registry(
   param_name: String,
   registry: SignatureRegistry,
 ) -> option.Option(Int) {
-  case signatures.lookup(registry, callee_name) {
-    Some(params) ->
-      // Try matching the in-body parameter name first (auto-inferred
-      // bounds key off the name, not the Gleam argument label). Fall
-      // back to label matching for JSON-sourced signatures where name
-      // info isn't available.
-      case
-        list.find(params, fn(p) {
-          case p.name {
-            Some(n) -> n == param_name
-            None -> False
-          }
-        })
-      {
-        Ok(p) -> Some(p.position)
-        Error(Nil) ->
-          case
-            list.find(params, fn(p) {
-              case p.label {
-                Some(l) -> l == param_name
-                None -> False
-              }
-            })
-          {
-            Ok(p) -> Some(p.position)
-            Error(Nil) -> None
-          }
-      }
-    None -> None
-  }
+  // Try in-body parameter name first (auto-inferred bounds key off
+  // the name, not the Gleam argument label). Fall back to label
+  // matching for JSON-sourced signatures where name info isn't
+  // available.
+  use params <- option.then(signatures.lookup(registry, callee_name))
+  let by_name =
+    find_param_position(params, fn(p) { p.name == Some(param_name) })
+  use <- option.lazy_or(by_name)
+  find_param_position(params, fn(p) { p.label == Some(param_name) })
+}
+
+fn find_param_position(
+  params: List(signatures.ParameterInfo),
+  predicate: fn(signatures.ParameterInfo) -> Bool,
+) -> option.Option(Int) {
+  list.find(params, predicate)
+  |> result.map(fn(p) { p.position })
+  |> option.from_result
 }
 
 fn find_bound_index(
