@@ -5,8 +5,8 @@ import gleam/set
 import graded/internal/types.{
   type EffectSet, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific,
+  TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -23,8 +23,25 @@ pub fn effect_set_gen() -> qcheck.Generator(EffectSet) {
     qcheck.map(qcheck.list_from(label_gen), fn(labels) {
       Specific(set.from_list(labels))
     })
+  let variable_gen =
+    qcheck.from_generators(qcheck.return("e"), [
+      qcheck.return("e1"),
+      qcheck.return("e2"),
+      qcheck.return("a"),
+    ])
+  let polymorphic_gen =
+    qcheck.map2(
+      qcheck.list_from(label_gen),
+      qcheck.map2(variable_gen, qcheck.list_from(variable_gen), fn(v, vs) {
+        [v, ..vs]
+      }),
+      fn(labels, variables) {
+        Polymorphic(set.from_list(labels), set.from_list(variables))
+      },
+    )
   qcheck.from_weighted_generators(#(1, qcheck.return(Wildcard)), [
     #(4, specific_gen),
+    #(2, polymorphic_gen),
   ])
 }
 

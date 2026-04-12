@@ -10,8 +10,8 @@ import graded/internal/types.{
   type ExternalAnnotation, type GradedFile, type GradedLine, type ParamBound,
   type TypeFieldAnnotation, AnnotationLine, BlankLine, Check, CommentLine,
   EffectAnnotation, Effects, ExternalAnnotation, ExternalLine, FunctionExternal,
-  GradedFile, ModuleExternal, ParamBound, Specific, TypeFieldAnnotation,
-  TypeFieldLine, Wildcard,
+  GradedFile, ModuleExternal, ParamBound, Polymorphic, Specific,
+  TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 
 pub type ParseError {
@@ -503,14 +503,29 @@ fn parse_effect_set(input: String) -> Result(EffectSet, Nil) {
   case inner {
     "_" -> Ok(Wildcard)
     "" -> Ok(Specific(set.new()))
-    _ ->
-      inner
-      |> string.split(",")
-      |> list.map(string.trim)
-      |> list.filter(fn(label) { label != "" })
-      |> set.from_list()
-      |> Specific
-      |> Ok
+    _ -> {
+      let tokens =
+        inner
+        |> string.split(",")
+        |> list.map(string.trim)
+        |> list.filter(fn(tok) { tok != "" })
+      let #(labels, variables) =
+        list.partition(tokens, fn(tok) { is_label_token(tok) })
+      case variables {
+        [] -> Ok(Specific(set.from_list(labels)))
+        _ -> Ok(Polymorphic(set.from_list(labels), set.from_list(variables)))
+      }
+    }
+  }
+}
+
+/// A token is an effect label if its first character is uppercase.
+/// Lowercase first character => effect variable.
+fn is_label_token(token: String) -> Bool {
+  case string.first(token) {
+    Ok(first) ->
+      first == string.uppercase(first) && first != string.lowercase(first)
+    Error(Nil) -> False
   }
 }
 
@@ -531,5 +546,12 @@ fn format_effect_set(effect_set: EffectSet) -> String {
         [] -> "[]"
         sorted -> "[" <> string.join(sorted, ", ") <> "]"
       }
+    Polymorphic(labels, variables) -> {
+      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
+      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
+      "["
+      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
+      <> "]"
+    }
   }
 }

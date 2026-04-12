@@ -1,4 +1,5 @@
 import glance.{type Span}
+import gleam/dict.{type Dict}
 import gleam/option.{type Option}
 import gleam/set.{type Set}
 
@@ -15,36 +16,55 @@ pub type AnnotationKind {
   Check
 }
 
-/// An effect set: either a concrete set of named effects,
-/// or the universal wildcard [_] that is a superset of everything.
+/// An effect set: either a concrete set of named effects, the universal
+/// wildcard [_], or a polymorphic set with effect variables.
+///
+/// Effect variables (lowercase identifiers like `e`, `e1`) represent
+/// "whatever effects the corresponding callback has". They are bound at
+/// call sites by argument-to-parameter matching and substituted away.
 pub type EffectSet {
   /// [_] — the universal set, top element of the effect lattice.
   /// Declaring [_] means "any effects are permitted here".
   Wildcard
   /// A concrete set of named effects, e.g. [Http, Stdout] or [].
   Specific(set: Set(String))
+  /// A polymorphic set mixing concrete labels with effect variables,
+  /// e.g. [e] or [Stdout, e]. Variables are resolved by substitution
+  /// at call sites.
+  Polymorphic(labels: Set(String), variables: Set(String))
 }
 
 /// True iff `actual` is a subset of `declared` in the effect lattice.
 /// Wildcard as declared always passes; Wildcard as actual against a
-/// finite declared set always fails.
+/// finite declared set always fails. Polymorphic sets are conservatively
+/// handled: as `actual`, any unresolved variables fail the subset check
+/// (substitution should happen before comparison); as `declared`,
+/// variables are treated as open slots that accept anything.
 pub fn is_subset(actual: EffectSet, declared: EffectSet) -> Bool {
-  case declared {
-    Wildcard -> True
-    Specific(d) ->
-      case actual {
-        Wildcard -> False
-        Specific(a) -> set.is_subset(a, of: d)
-      }
+  case declared, actual {
+    Wildcard, _ -> True
+    _, Wildcard -> False
+    Polymorphic(d_labels, _), Specific(a) -> set.is_subset(a, of: d_labels)
+    Polymorphic(d_labels, d_vars), Polymorphic(a_labels, a_vars) ->
+      set.is_subset(a_labels, of: d_labels) && set.is_subset(a_vars, of: d_vars)
+    Specific(d), Specific(a) -> set.is_subset(a, of: d)
+    // Polymorphic with unresolved variables cannot be verified against
+    // a finite concrete set. Return False conservatively.
+    Specific(_), Polymorphic(_, _) -> False
   }
 }
 
-/// Union of two effect sets. Wildcard absorbs everything.
+/// Union of two effect sets. Wildcard absorbs everything. Polymorphic
+/// sets merge labels and variables component-wise.
 pub fn union(a: EffectSet, b: EffectSet) -> EffectSet {
   case a, b {
     Wildcard, _ -> Wildcard
     _, Wildcard -> Wildcard
     Specific(x), Specific(y) -> Specific(set.union(x, y))
+    Polymorphic(l1, v1), Polymorphic(l2, v2) ->
+      Polymorphic(set.union(l1, l2), set.union(v1, v2))
+    Specific(x), Polymorphic(l, v) -> Polymorphic(set.union(x, l), v)
+    Polymorphic(l, v), Specific(x) -> Polymorphic(set.union(l, x), v)
   }
 }
 
@@ -56,6 +76,59 @@ pub fn empty() -> EffectSet {
 /// Construct a Specific effect set from a list of label strings.
 pub fn from_labels(labels: List(String)) -> EffectSet {
   Specific(set.from_list(labels))
+}
+
+/// Construct a Polymorphic effect set from lists of labels and variables.
+/// If `variables` is empty, collapses to `Specific`.
+pub fn from_labels_and_variables(
+  labels: List(String),
+  variables: List(String),
+) -> EffectSet {
+  case variables {
+    [] -> Specific(set.from_list(labels))
+    _ -> Polymorphic(set.from_list(labels), set.from_list(variables))
+  }
+}
+
+/// True iff this effect set contains unresolved effect variables.
+pub fn has_variables(effect_set: EffectSet) -> Bool {
+  case effect_set {
+    Polymorphic(_, variables) -> !set.is_empty(variables)
+    _ -> False
+  }
+}
+
+/// Substitute effect variables with their bound effect sets. Variables
+/// not in the bindings dict are kept as-is (still unresolved).
+pub fn substitute(
+  effect_set: EffectSet,
+  bindings: Dict(String, EffectSet),
+) -> EffectSet {
+  case effect_set {
+    Wildcard -> Wildcard
+    Specific(_) -> effect_set
+    Polymorphic(labels, variables) -> {
+      let base = Specific(labels)
+      let #(resolved, unresolved) =
+        set.fold(variables, #(base, []), fn(state, var) {
+          let #(acc, leftover) = state
+          case dict.get(bindings, var) {
+            Ok(bound) -> #(union(acc, bound), leftover)
+            Error(Nil) -> #(acc, [var, ..leftover])
+          }
+        })
+      case unresolved {
+        [] -> resolved
+        _ ->
+          case resolved {
+            Wildcard -> Wildcard
+            Specific(l) -> Polymorphic(l, set.from_list(unresolved))
+            Polymorphic(l, v) ->
+              Polymorphic(l, set.union(v, set.from_list(unresolved)))
+          }
+      }
+    }
+  }
 }
 
 /// An effect bound on a function-typed parameter.

@@ -7,8 +7,8 @@ import gleeunit/should
 import graded/internal/annotation
 import graded/internal/types.{
   AnnotationLine, BlankLine, Check, CommentLine, EffectAnnotation, Effects,
-  ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Specific,
-  TypeFieldAnnotation, TypeFieldLine, Wildcard,
+  ExternalAnnotation, ExternalLine, FunctionExternal, ParamBound, Polymorphic,
+  Specific, TypeFieldAnnotation, TypeFieldLine, Wildcard,
 }
 import qcheck
 
@@ -351,6 +351,50 @@ pub fn format_wildcard_annotation_test() {
       effects: Wildcard,
     )
   annotation.format_annotation(ann) |> should.equal("effects handler : [_]")
+}
+
+// --- Polymorphic effect variables ---
+
+pub fn parse_polymorphic_single_variable_test() {
+  let input = "effects apply(f: [e]) : [e]"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.params
+  |> should.equal([
+    ParamBound("f", Polymorphic(set.new(), set.from_list(["e"]))),
+  ])
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["e"])))
+}
+
+pub fn parse_polymorphic_mixed_labels_and_variables_test() {
+  let input = "effects map(f: [e]) : [Stdout, e]"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.effects
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
+}
+
+pub fn parse_polymorphic_multiple_variables_test() {
+  let input = "effects apply2(f: [e1], g: [e2]) : [e1, e2]"
+  let assert Ok([ann]) = annotation.parse(input)
+  ann.params
+  |> should.equal([
+    ParamBound("f", Polymorphic(set.new(), set.from_list(["e1"]))),
+    ParamBound("g", Polymorphic(set.new(), set.from_list(["e2"]))),
+  ])
+  ann.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["e1", "e2"])))
+}
+
+pub fn format_polymorphic_annotation_test() {
+  let ann =
+    EffectAnnotation(
+      kind: Effects,
+      function: "apply",
+      params: [ParamBound("f", Polymorphic(set.new(), set.from_list(["e"])))],
+      effects: Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])),
+    )
+  annotation.format_annotation(ann)
+  |> should.equal("effects apply(f: [e]) : [Stdout, e]")
 }
 
 // ──── Parse/Format Roundtrips (property) ────

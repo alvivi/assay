@@ -7,7 +7,9 @@ import gleam/set
 import gleam/string
 import gleeunit/should
 import graded/internal/effects
-import graded/internal/types.{QualifiedName, Specific, Wildcard}
+import graded/internal/types.{
+  type EffectSet, Polymorphic, QualifiedName, Specific, Wildcard,
+}
 import qcheck
 import simplifile
 
@@ -209,6 +211,88 @@ pub fn subset_union_compatibility_test() {
   let subset = types.is_subset(a, b)
   let union_eq = types.union(a, b) == b
   subset |> should.equal(union_eq)
+}
+
+// ──── Polymorphic Effect Sets ────
+
+pub fn has_variables_specific_is_false_test() {
+  types.has_variables(types.from_labels(["Stdout"])) |> should.be_false()
+}
+
+pub fn has_variables_wildcard_is_false_test() {
+  types.has_variables(Wildcard) |> should.be_false()
+}
+
+pub fn has_variables_polymorphic_is_true_test() {
+  let set: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
+  types.has_variables(set) |> should.be_true()
+}
+
+pub fn substitute_resolves_single_variable_test() {
+  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
+  let bindings = dict.from_list([#("e", types.from_labels(["Stdout"]))])
+  types.substitute(poly, bindings)
+  |> should.equal(types.from_labels(["Stdout"]))
+}
+
+pub fn substitute_merges_labels_and_binding_test() {
+  let poly: EffectSet =
+    Polymorphic(set.from_list(["Http"]), set.from_list(["e"]))
+  let bindings = dict.from_list([#("e", types.from_labels(["Stdout"]))])
+  types.substitute(poly, bindings)
+  |> should.equal(types.from_labels(["Http", "Stdout"]))
+}
+
+pub fn substitute_multiple_variables_test() {
+  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e1", "e2"]))
+  let bindings =
+    dict.from_list([
+      #("e1", types.from_labels(["Stdout"])),
+      #("e2", types.from_labels(["Http"])),
+    ])
+  types.substitute(poly, bindings)
+  |> should.equal(types.from_labels(["Http", "Stdout"]))
+}
+
+pub fn substitute_unresolved_variables_remain_test() {
+  let poly: EffectSet = Polymorphic(set.new(), set.from_list(["e1", "e2"]))
+  let bindings = dict.from_list([#("e1", types.from_labels(["Stdout"]))])
+  types.substitute(poly, bindings)
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e2"])))
+}
+
+pub fn substitute_on_specific_is_identity_test() {
+  let s = types.from_labels(["Stdout"])
+  types.substitute(s, dict.from_list([#("e", types.from_labels(["Http"]))]))
+  |> should.equal(s)
+}
+
+pub fn union_polymorphic_merges_both_test() {
+  let a: EffectSet = Polymorphic(set.from_list(["Http"]), set.from_list(["e1"]))
+  let b: EffectSet =
+    Polymorphic(set.from_list(["Stdout"]), set.from_list(["e2"]))
+  types.union(a, b)
+  |> should.equal(Polymorphic(
+    set.from_list(["Http", "Stdout"]),
+    set.from_list(["e1", "e2"]),
+  ))
+}
+
+pub fn union_polymorphic_and_specific_test() {
+  let a: EffectSet = Polymorphic(set.new(), set.from_list(["e"]))
+  let b: EffectSet = types.from_labels(["Stdout"])
+  types.union(a, b)
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
+}
+
+pub fn from_labels_and_variables_collapses_when_no_vars_test() {
+  types.from_labels_and_variables(["Stdout"], [])
+  |> should.equal(types.from_labels(["Stdout"]))
+}
+
+pub fn from_labels_and_variables_produces_polymorphic_test() {
+  types.from_labels_and_variables(["Stdout"], ["e"])
+  |> should.equal(Polymorphic(set.from_list(["Stdout"]), set.from_list(["e"])))
 }
 
 // ──── Semver Ordering Laws ────

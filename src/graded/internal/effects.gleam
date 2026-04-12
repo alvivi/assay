@@ -10,7 +10,8 @@ import graded/internal/config
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type ExternalAnnotation,
   type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, QualifiedName, Specific, Wildcard,
+  FunctionExternal, ModuleExternal, Polymorphic, QualifiedName, Specific,
+  Wildcard,
 }
 import simplifile
 import tom
@@ -159,6 +160,13 @@ pub fn format_effect_set(effect_set: EffectSet) -> String {
         [] -> "[]"
         sorted -> "[" <> string.join(sorted, ", ") <> "]"
       }
+    Polymorphic(labels, variables) -> {
+      let sorted_labels = set.to_list(labels) |> list.sort(string.compare)
+      let sorted_variables = set.to_list(variables) |> list.sort(string.compare)
+      "["
+      <> string.join(list.append(sorted_labels, sorted_variables), ", ")
+      <> "]"
+    }
   }
 }
 
