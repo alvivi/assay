@@ -133,8 +133,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
-  let dep_registry =
-    signatures.load_from_packages_dir("build/packages")
+  let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
 
   let results =
@@ -195,8 +194,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // Build a signature registry covering every project module so the
   // checker can do positional argument matching for cross-module
   // polymorphic calls.
-  let dep_registry =
-    signatures.load_from_packages_dir("build/packages")
+  let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
 
   use #(_kb, public_annotations) <- result.try(
