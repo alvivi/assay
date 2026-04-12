@@ -12,14 +12,17 @@
 //// parameters on locally-defined functions without type info from the
 //// package interface (e.g. private functions not in the exported JSON).
 
+import filepath
 import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 import gleam/set.{type Set}
 import graded/internal/types.{type QualifiedName, QualifiedName}
+import simplifile
 
 /// One parameter of a function's signature.
 ///
@@ -259,3 +262,69 @@ fn assignment_name(name: glance.AssignmentName) -> Option(String) {
     glance.Discarded(_) -> None
   }
 }
+
+// ──── Dependency package-interface loading ────
+
+/// Load signature registries for every dependency in `packages_dir`.
+///
+/// For each subdirectory of `packages_dir`, exports the dependency's
+/// `gleam export package-interface` JSON to a cache file in
+/// `cache_dir/<dep>-package-interface.json`, then loads that JSON
+/// into the registry. Cached files are reused on subsequent runs.
+///
+/// Failures (missing `gleam` binary, malformed JSON, unbuildable dep)
+/// are silently skipped — the result is best-effort. Deps that fail
+/// to load contribute no entries to the registry, so calls into them
+/// fall back to the existing label-only matching path.
+pub fn load_for_packages(
+  packages_dir: String,
+  cache_dir: String,
+) -> SignatureRegistry {
+  case simplifile.read_directory(packages_dir) {
+    Error(_) -> empty()
+    Ok(entries) ->
+      list.fold(entries, empty(), fn(acc, dep) {
+        let dep_path = filepath.join(packages_dir, dep)
+        let cache_path =
+          filepath.join(cache_dir, dep <> "-package-interface.json")
+        let json_string = read_or_export(dep_path, cache_path)
+        case json_string {
+          Error(_) -> acc
+          Ok(content) ->
+            case from_json_string(content) {
+              Error(_) -> acc
+              Ok(registry) -> merge(acc, registry)
+            }
+        }
+      })
+  }
+}
+
+/// Read a cached package-interface JSON file, or run `gleam export` in
+/// the dep directory to produce one. Returns the JSON string.
+fn read_or_export(dep_path: String, cache_path: String) -> Result(String, Nil) {
+  case simplifile.read(cache_path) {
+    Ok(content) -> Ok(content)
+    Error(_) -> {
+      // Best-effort directory creation — if it fails, the gleam export
+      // call below will fail too and we'll bail out.
+      let _mkdir =
+        simplifile.create_directory_all(filepath.directory_name(cache_path))
+      let cmd =
+        "cd "
+        <> shell_quote(dep_path)
+        <> " && gleam export package-interface --out "
+        <> shell_quote(cache_path)
+        <> " 2>/dev/null"
+      let _output = shell_exec(cmd)
+      simplifile.read(cache_path) |> result.replace_error(Nil)
+    }
+  }
+}
+
+fn shell_quote(s: String) -> String {
+  "'" <> s <> "'"
+}
+
+@external(erlang, "graded_ffi", "shell_exec")
+fn shell_exec(command: String) -> String
