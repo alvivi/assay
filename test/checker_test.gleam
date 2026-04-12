@@ -931,3 +931,61 @@ pub fn new() {
     checker.infer(module, polymorphic_kb(), [], signatures.empty())
   ann.effects |> should.equal(Specific(set.new()))
 }
+
+pub fn substitute_unresolvable_argument_keeps_variable_test() {
+  // Caller passes an arbitrary expression (an arithmetic result, not
+  // a function reference or constructor) in the fn-typed position.
+  // The variable can't bind to anything concrete, so substitution
+  // should leave it polymorphic with [Unknown] standing in for the
+  // unresolved callback's effects.
+  let source =
+    "
+import validation
+pub fn new() {
+  validation.validate_range(42, to_error: 1 + 2)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, polymorphic_kb(), [], signatures.empty())
+  ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+// KB with a two-callback polymorphic function:
+//   apply2(f: [f], g: [g]) : [f, g]
+fn two_callback_kb() -> effects.KnowledgeBase {
+  let effect_set = Polymorphic(set.new(), set.from_list(["f", "g"]))
+  let effects_map =
+    dict.from_list([
+      #(QualifiedName("combo", "apply2"), effect_set),
+      #(QualifiedName("fx", "stdout_fn"), Specific(set.from_list(["Stdout"]))),
+      #(QualifiedName("fx", "http_fn"), Specific(set.from_list(["Http"]))),
+    ])
+  let params_map =
+    dict.from_list([
+      #(QualifiedName("combo", "apply2"), [
+        ParamBound("f", Polymorphic(set.new(), set.from_list(["f"]))),
+        ParamBound("g", Polymorphic(set.new(), set.from_list(["g"]))),
+      ]),
+    ])
+  effects.empty_knowledge_base()
+  |> effects.with_inferred(effects_map)
+  |> effects.with_inferred_params(params_map)
+}
+
+pub fn substitute_two_fn_typed_params_different_effects_test() {
+  // f binds to fx.stdout_fn → [Stdout], g binds to fx.http_fn → [Http].
+  // Result should be [Http, Stdout].
+  let source =
+    "
+import combo
+import fx
+pub fn run() {
+  combo.apply2(f: fx.stdout_fn, g: fx.http_fn)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let assert [ann] =
+    checker.infer(module, two_callback_kb(), [], signatures.empty())
+  ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
+}
