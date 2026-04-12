@@ -722,7 +722,7 @@ fn print_violations(check_result: CheckResult) -> Nil {
 }
 
 fn print_violation(file: String, violation: Violation) -> Nil {
-  io.println(
+  let base =
     file
     <> ": "
     <> violation.function
@@ -733,8 +733,19 @@ fn print_violation(file: String, violation: Violation) -> Nil {
     <> " with effects "
     <> effects.format_effect_set(violation.actual)
     <> " but declared "
-    <> effects.format_effect_set(violation.declared),
-  )
+    <> effects.format_effect_set(violation.declared)
+  // When the actual set still contains effect variables, the substitution
+  // couldn't bind them (e.g. caller's own param has no declared bound).
+  // Hint at the fix instead of letting the user puzzle over `[e_xxx]`.
+  let hint = case types.has_variables(violation.actual) {
+    True ->
+      "\n  hint: actual effects contain unresolved variables; add a `check "
+      <> violation.function
+      <> "(<param>: [...])` bound, or pass a function reference / constructor"
+      <> " whose effects are known"
+    False -> ""
+  }
+  io.println(base <> hint)
 }
 
 fn print_warnings(check_result: CheckResult) -> Nil {

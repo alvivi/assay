@@ -298,6 +298,14 @@ fn collect_effects(
                 knowledge_base,
                 registry,
               )
+              |> substitute_local_call_effects(
+                local_call,
+                result.call_args,
+                function_map,
+                knowledge_base,
+                param_bounds,
+                registry,
+              )
           }
       }
     })
@@ -318,6 +326,76 @@ fn collect_effects(
     })
 
   list.flatten([resolved_effects, local_effects, field_effects])
+}
+
+/// Substitute effect variables in the recursive analysis of a local
+/// (same-module) call. The recursive `collect_effects` returns calls
+/// from inside the callee whose effects may reference the callee's
+/// own fn-typed parameters as variables; this resolves those
+/// variables against the caller's arguments at this call site.
+///
+/// Without this step, a same-module higher-order helper would leak
+/// `[<var>]` upward — only cross-module calls (which go through
+/// `substitute_at_call_site`) would get bound.
+fn substitute_local_call_effects(
+  recursive: List(#(types.ResolvedCall, EffectSet)),
+  local_call: LocalCall,
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  function_map: dict.Dict(String, Definition(Function)),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+) -> List(#(types.ResolvedCall, EffectSet)) {
+  let any_polymorphic = list.any(recursive, fn(p) { types.has_variables(p.1) })
+  use <- bool.guard(when: !any_polymorphic, return: recursive)
+  case dict.get(function_map, local_call.function) {
+    Error(Nil) -> recursive
+    Ok(local_definition) -> {
+      let bounds = local_polymorphic_bounds(local_definition.definition)
+      let args = dict.get(call_args, local_call.span.start) |> result.unwrap([])
+      let callee_name =
+        QualifiedName(module: "<local>", function: local_call.function)
+      // The synthetic `<local>` module isn't in `registry`, so build a
+      // single-entry registry from this local function's glance AST so
+      // positional argument matching has parameter info to work with.
+      let local_registry =
+        signatures.from_glance_module(
+          "<local>",
+          glance.Module(
+            imports: [],
+            custom_types: [],
+            type_aliases: [],
+            constants: [],
+            functions: [local_definition],
+          ),
+        )
+      let merged_registry = signatures.merge(registry, local_registry)
+      let bindings =
+        bind_variables(
+          callee_name,
+          bounds,
+          args,
+          knowledge_base,
+          caller_param_bounds,
+          merged_registry,
+        )
+      list.map(recursive, fn(pair) {
+        let #(call, effects) = pair
+        #(call, types.substitute(effects, bindings))
+      })
+    }
+  }
+}
+
+/// Derive the polymorphic param bounds a local function would carry
+/// after auto-inference: one bound per fn-typed parameter, with an
+/// effect variable matching the parameter name.
+fn local_polymorphic_bounds(function: Function) -> List(ParamBound) {
+  signatures.fn_typed_params_from_function(function)
+  |> set.to_list
+  |> list.map(fn(name) {
+    ParamBound(name, Polymorphic(set.new(), set.from_list([name])))
+  })
 }
 
 /// Resolve effect variables at a call site. If the callee's effects
@@ -362,12 +440,10 @@ fn bind_variables(
   registry: SignatureRegistry,
 ) -> dict.Dict(String, EffectSet) {
   list.fold(callee_bounds, dict.new(), fn(acc, bound) {
-    // Find the argument matching this parameter: first by label,
-    // then by real parameter position (via the signature registry),
-    // and finally by the bound's index within the bounds list as a
-    // last-resort fallback for callees we have no registry entry for.
-    let matched =
-      find_matching_arg(callee_name, bound, callee_bounds, args, registry)
+    // Find the argument matching this parameter by label (caller used
+    // an explicit label) or by real parameter position from the
+    // registry. If neither matches, the variable stays unresolved.
+    let matched = find_matching_arg(callee_name, bound, args, registry)
     case matched {
       Some(arg) -> {
         let arg_effects =
@@ -397,24 +473,21 @@ fn variables_in(effect_set: EffectSet) -> List(String) {
 fn find_matching_arg(
   callee_name: types.QualifiedName,
   bound: ParamBound,
-  all_bounds: List(ParamBound),
   args: List(types.CallArgument),
   registry: SignatureRegistry,
 ) -> option.Option(types.CallArgument) {
-  // Try three strategies in order:
+  // Try two strategies in order:
   //   1. Label match (caller used an explicit argument label)
   //   2. Registry-backed position (authoritative when available)
-  //   3. Fall back to the bound's index in the bounds list — only
-  //      correct when every parameter has a bound, but preserves
-  //      pre-registry behavior for dep callees.
+  // We deliberately do not fall back to the bound's index in the
+  // bounds list — that's only correct when every parameter has a
+  // bound, and silently picks the wrong argument when bounds are
+  // sparse. If the registry has no entry, the variable stays
+  // unresolved and surfaces as part of the result.
   let by_label = find_arg_by_label(args, bound.name)
   use <- option.lazy_or(by_label)
-  let by_position =
-    position_from_registry(callee_name, bound.name, registry)
-    |> option.then(fn(pos) { find_arg_at_position(args, pos) })
-  use <- option.lazy_or(by_position)
-  find_bound_index(bound, all_bounds, 0)
-  |> option.then(fn(i) { find_arg_at_position(args, i) })
+  position_from_registry(callee_name, bound.name, registry)
+  |> option.then(fn(pos) { find_arg_at_position(args, pos) })
 }
 
 fn find_arg_by_label(
@@ -459,21 +532,6 @@ fn find_param_position(
   list.find(params, predicate)
   |> result.map(fn(p) { p.position })
   |> option.from_result
-}
-
-fn find_bound_index(
-  target: ParamBound,
-  bounds: List(ParamBound),
-  acc: Int,
-) -> option.Option(Int) {
-  case bounds {
-    [] -> None
-    [first, ..rest] ->
-      case first.name == target.name {
-        True -> Some(acc)
-        False -> find_bound_index(target, rest, acc + 1)
-      }
-  }
 }
 
 /// Look up the effects of an argument value. Function references →

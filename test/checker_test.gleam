@@ -973,6 +973,29 @@ fn two_callback_kb() -> effects.KnowledgeBase {
   |> effects.with_inferred_params(params_map)
 }
 
+pub fn substitute_same_module_local_call_test() {
+  // `outer` calls a same-module local helper that takes a callback.
+  // Without local-call substitution, `outer` would inherit `[g]`
+  // unresolved. With it, the constructor argument binds g → [],
+  // so `outer` infers as pure.
+  let source =
+    "
+pub type MyError {
+  Oops(value: Int)
+}
+fn helper(g: fn(Int) -> MyError, x: Int) -> MyError {
+  g(x)
+}
+pub fn outer() -> MyError {
+  helper(Oops, 42)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
+  outer.effects |> should.equal(Specific(set.new()))
+}
+
 pub fn substitute_two_fn_typed_params_different_effects_test() {
   // f binds to fx.stdout_fn → [Stdout], g binds to fx.http_fn → [Http].
   // Result should be [Http, Stdout].
