@@ -196,32 +196,6 @@ pub type LocalCall {
   LocalCall(function: String, span: Span)
 }
 
-/// Classification of a local `let`-bound name inside a function body.
-///
-/// Tracked by the extractor so that calls through locally-bound names
-/// (`let f = io.println; f(x)`) and field accesses on locally-constructed
-/// records (`let v = Validator(to_error: E); v.to_error(x)`) can resolve
-/// without crossing function boundaries.
-pub type LocalBinding {
-  /// `let f = some_module.fun` or `let f = unqualified_imported_name`.
-  BoundFunctionRef(name: QualifiedName)
-  /// `let g = f` — resolved by chasing into the env (with a hop cap).
-  BoundAlias(name: String)
-  /// `let v = Validator(to_error: ..., ...)`. `fields` holds labelled
-  /// arguments; `positional` holds unlabelled ones in source order.
-  /// Module is `Some(_)` for qualified constructors (`other.Validator`).
-  BoundConstructor(
-    type_name: String,
-    module: Option(String),
-    fields: Dict(String, ArgumentValue),
-    positional: List(ArgumentValue),
-  )
-  /// Anything that can't be tracked: closures, computed expressions,
-  /// use-bound names, pattern-destructure names, literals, etc.
-  /// Inserted on shadowing so stale bindings don't leak forward.
-  BoundOpaque
-}
-
 /// A field access call: object.label(args) where object is a local variable.
 pub type FieldCall {
   FieldCall(object: String, label: String, span: Span)

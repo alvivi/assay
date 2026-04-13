@@ -2,26 +2,29 @@ import filepath
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
-import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type ArgumentValue, type CallArgument, type FieldCall, type LocalBinding,
-  type LocalCall, type QualifiedName, type ResolvedCall, BoundAlias,
-  BoundConstructor, BoundFunctionRef, BoundOpaque, CallArgument, ConstructorRef,
-  FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName,
-  ResolvedCall,
+  type ArgumentValue, type CallArgument, type FieldCall, type LocalCall,
+  type QualifiedName, type ResolvedCall, CallArgument, ConstructorRef, FieldCall,
+  FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName, ResolvedCall,
 }
 
-/// Binding environment: local names introduced by `let` bindings inside
-/// a function body, mapped to their classification. Threaded through
-/// statement walks so subsequent statements see earlier bindings. Block
-/// and `fn(...)` bodies inherit the outer env but their own bindings do
-/// not leak back out.
-pub type Env =
+/// Classification of a `let`-bound name inside a function body so that
+/// later calls through the name can be resolved. `BoundOpaque` covers
+/// everything we can't statically track (closures, computed values,
+/// destructuring) and is also written on shadowing to erase stale
+/// bindings.
+type LocalBinding {
+  BoundFunctionRef(name: QualifiedName)
+  BoundConstructor(fields: Dict(String, ArgumentValue))
+  BoundOpaque
+}
+
+type Env =
   Dict(String, LocalBinding)
 
 /// Compute the dotted module name (as it appears in `import` statements) for
@@ -113,8 +116,6 @@ pub fn build_import_context(module: Module) -> ImportContext {
   ImportContext(aliases:, unqualified:, constructors:)
 }
 
-/// Collect the ordered labels of every constructor declared in this
-/// module. `None` means the field is unlabelled at that position.
 fn build_constructor_registry(
   module: Module,
 ) -> Dict(String, List(Option(String))) {
@@ -133,40 +134,27 @@ fn build_constructor_registry(
 }
 
 /// Extract all calls from a list of statements.
-///
-/// Public entry: starts with an empty binding env and discards the
-/// final env. Internally `walk_statements` threads env through so
-/// assignments can be resolved by later statements.
 pub fn extract_calls(
   statements: List(Statement),
   context: ImportContext,
 ) -> ExtractResult {
-  let #(result, _env) = walk_statements(statements, context, dict.new())
-  result
+  walk_scope(statements, context, dict.new())
 }
 
-fn walk_statements(
+/// Walk a sequence of statements threading the binding env forward so
+/// later statements see earlier `let`s. The final env is discarded —
+/// block/closure bindings don't leak back to the enclosing scope.
+fn walk_scope(
   statements: List(Statement),
   context: ImportContext,
   env: Env,
-) -> #(ExtractResult, Env) {
+) -> ExtractResult {
   list.fold(statements, #(empty(), env), fn(state, statement) {
     let #(accumulated, current_env) = state
     let #(result, next_env) =
       extract_from_statement(statement, context, current_env)
     #(merge(accumulated, result), next_env)
-  })
-}
-
-/// Walk a child scope (block or fn body): inherits the outer env but
-/// discards its own bindings on exit so they don't leak out.
-fn walk_child_scope(
-  statements: List(Statement),
-  context: ImportContext,
-  env: Env,
-) -> ExtractResult {
-  let #(result, _env) = walk_statements(statements, context, env)
-  result
+  }).0
 }
 
 // PRIVATE
@@ -178,10 +166,7 @@ fn is_constructor_name(name: String) -> Bool {
   }
 }
 
-/// Resolve a bare-name call, consulting the local binding env first.
-/// If the name was introduced by a `let` that captured a function
-/// reference, the call becomes a ResolvedCall; otherwise fall through
-/// to the import-based resolution.
+/// Env-captured function refs beat import-based resolution.
 fn resolve_variable_call(
   name: String,
   span: glance.Span,
@@ -230,12 +215,9 @@ fn resolve_unqualified_call(
   }
 }
 
-/// Resolve a qualified `alias.label` call or pipe target. Constructor
-/// labels short-circuit to empty (pure value creation). Import aliases
-/// produce a cross-module ResolvedCall. If `alias` is a local binding
-/// (a record constructed in this function), look up the field in the
-/// binding env and resolve based on the field's value. Otherwise fall
-/// back to a FieldCall.
+/// `alias.label` where `alias` is either an imported module (cross-module
+/// call), a locally-constructed record (field-call resolution via env),
+/// or an unknown local (FieldCall for type-level annotation lookup).
 fn resolve_qualified_call(
   alias: String,
   function_name: String,
@@ -269,7 +251,7 @@ fn qualified_call_lookup(
       )
     Error(Nil) ->
       case resolve_env(alias, env) {
-        BoundConstructor(fields:, ..) ->
+        BoundConstructor(fields:) ->
           resolve_constructor_field_call(alias, function_name, span, fields)
         _ ->
           ExtractResult(
@@ -283,10 +265,8 @@ fn qualified_call_lookup(
   }
 }
 
-/// Resolve a labelled field of a locally-constructed record to a call.
-/// If the stored value is a function reference or a local name, emit a
-/// resolved or local call; otherwise fall back to a FieldCall so the
-/// type-level `type Foo.field : [...]` annotation path still applies.
+/// Fallback to `FieldCall` preserves the type-level
+/// `type Foo.field : [...]` annotation path for unresolved cases.
 fn resolve_constructor_field_call(
   alias: String,
   label: String,
@@ -402,9 +382,8 @@ fn extract_from_statement(
 /// Record the names introduced by a `let` pattern.
 ///
 /// A `PatternVariable` (simple `let x = rhs`) is classified via
-/// `classify_rhs`. Destructuring patterns (`let #(a, b) = ...`,
-/// `let Validator(..) = ...`) always bind their names to `BoundOpaque`
-/// — tracking values through destructuring is out of scope.
+/// Destructuring patterns always bind their names to `BoundOpaque` —
+/// tracking values through destructuring is out of scope.
 fn bind_assignment(
   pattern: glance.Pattern,
   value: glance.Expression,
@@ -414,63 +393,28 @@ fn bind_assignment(
   case pattern {
     glance.PatternVariable(name:, ..) ->
       dict.insert(env, name, classify_rhs(value, context, env))
-    _ ->
-      list.fold(pattern_bound_names(pattern), env, fn(acc, name) {
-        dict.insert(acc, name, BoundOpaque)
-      })
+    _ -> fold_pattern_names(pattern, env, bind_opaque)
   }
 }
 
-/// Classify the right-hand side of a simple `let name = rhs`. Anything
-/// not recognised becomes `BoundOpaque`, which deliberately shadows
-/// any earlier binding of the same name.
+fn bind_opaque(env: Env, name: String) -> Env {
+  dict.insert(env, name, BoundOpaque)
+}
+
+/// Classify the right-hand side of a `let name = rhs`. Unrecognised
+/// shapes become `BoundOpaque`, which deliberately shadows any earlier
+/// binding of the same name.
 fn classify_rhs(
   expression: glance.Expression,
   context: ImportContext,
   env: Env,
 ) -> LocalBinding {
   case expression {
-    glance.FieldAccess(
-      container: glance.Variable(_, alias),
-      label: function_name,
-      ..,
-    ) ->
-      case is_constructor_name(function_name) {
-        True -> BoundOpaque
-        False ->
-          case dict.get(context.aliases, alias) {
-            Ok(module_path) ->
-              BoundFunctionRef(name: QualifiedName(module_path, function_name))
-            Error(Nil) -> BoundOpaque
-          }
-      }
-    glance.Variable(_, name) ->
-      case is_constructor_name(name) {
-        True -> BoundOpaque
-        False ->
-          case dict.get(context.unqualified, name) {
-            Ok(qualified_name) -> BoundFunctionRef(name: qualified_name)
-            Error(Nil) ->
-              case dict.has_key(env, name) {
-                True -> BoundAlias(name:)
-                False -> BoundOpaque
-              }
-          }
-      }
-    // Bare-constructor call: `Validator(to_error: MyError)`.
     glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
       case is_constructor_name(name) {
-        True ->
-          classify_constructor(
-            type_name: name,
-            module: None,
-            arguments: arguments,
-            context: context,
-            env: env,
-          )
-        False -> BoundOpaque
+        True -> classify_constructor(name, None, arguments, context, env)
+        False -> classify_rhs_ref(expression, context, env)
       }
-    // Qualified-constructor call: `other.Validator(to_error: MyError)`.
     glance.Call(
       function: glance.FieldAccess(
         container: glance.Variable(_, alias),
@@ -481,42 +425,51 @@ fn classify_rhs(
       ..,
     ) ->
       case is_constructor_name(ctor) {
-        True ->
-          classify_constructor(
-            type_name: ctor,
-            module: dict.get(context.aliases, alias) |> option.from_result,
-            arguments: arguments,
-            context: context,
-            env: env,
-          )
+        True -> {
+          let module = dict.get(context.aliases, alias) |> option.from_result
+          classify_constructor(ctor, module, arguments, context, env)
+        }
         False -> BoundOpaque
       }
-    _ -> BoundOpaque
+    _ -> classify_rhs_ref(expression, context, env)
+  }
+}
+
+/// For RHS expressions that aren't constructor calls, reuse
+/// `classify_expression`'s shape recognition and map its result to a
+/// `LocalBinding`. Eager resolution through the env means aliases never
+/// need to be chased at lookup time.
+fn classify_rhs_ref(
+  expression: glance.Expression,
+  context: ImportContext,
+  env: Env,
+) -> LocalBinding {
+  case classify_expression(expression, context, env) {
+    FunctionRef(name:) -> BoundFunctionRef(name:)
+    LocalRef(name:) -> dict.get(env, name) |> result.unwrap(BoundOpaque)
+    ConstructorRef | OtherExpression -> BoundOpaque
   }
 }
 
 /// Build a BoundConstructor from a constructor call's arguments.
-/// Labelled arguments populate `fields`; unlabelled ones go to
-/// `positional` in source order. Shorthand (`Validator(to_error:)`)
-/// records `OtherExpression` for the value.
+/// Labelled arguments populate `fields` directly. Unlabelled ones are
+/// mapped to the corresponding labelled slot when the constructor's
+/// declared labels are known (same-module); otherwise discarded —
+/// field-call resolution only needs the labelled view.
 fn classify_constructor(
-  type_name type_name: String,
-  module module: Option(String),
-  arguments arguments: List(Field(Expression)),
-  context context: ImportContext,
-  env env: Env,
+  type_name: String,
+  module: Option(String),
+  arguments: List(Field(Expression)),
+  context: ImportContext,
+  env: Env,
 ) -> LocalBinding {
-  // Same-module constructor labels, if known. Cross-module constructors
-  // aren't indexed yet — their unlabelled args stay in `positional`.
   let declared_labels = case module {
-    None ->
-      dict.get(context.constructors, type_name)
-      |> result.unwrap([])
+    None -> dict.get(context.constructors, type_name) |> result.unwrap([])
     Some(_) -> []
   }
-  let #(fields, positional, _) =
-    list.fold(arguments, #(dict.new(), [], declared_labels), fn(acc, field) {
-      let #(fields_acc, positional_acc, remaining_labels) = acc
+  let #(fields, _remaining) =
+    list.fold(arguments, #(dict.new(), declared_labels), fn(acc, field) {
+      let #(fields_acc, remaining) = acc
       case field {
         glance.LabelledField(label:, item:, ..) -> #(
           dict.insert(
@@ -524,108 +477,93 @@ fn classify_constructor(
             label,
             classify_expression(item, context, env),
           ),
-          positional_acc,
-          remaining_labels,
+          remaining,
         )
         glance.ShorthandField(label:, ..) -> #(
           dict.insert(fields_acc, label, OtherExpression),
-          positional_acc,
-          remaining_labels,
+          remaining,
         )
         glance.UnlabelledField(item:) -> {
           let value = classify_expression(item, context, env)
-          case remaining_labels {
+          case remaining {
             [Some(label), ..rest] -> #(
               dict.insert(fields_acc, label, value),
-              positional_acc,
               rest,
             )
-            [None, ..rest] -> #(fields_acc, [value, ..positional_acc], rest)
-            [] -> #(fields_acc, [value, ..positional_acc], [])
+            [_, ..rest] -> #(fields_acc, rest)
+            [] -> #(fields_acc, [])
           }
         }
       }
     })
-  BoundConstructor(
-    type_name: type_name,
-    module: module,
-    fields: fields,
-    positional: list.reverse(positional),
-  )
+  BoundConstructor(fields:)
 }
 
-/// Chase a chain of `BoundAlias` bindings to their root. Returns the
-/// resolved binding (or `BoundOpaque` if the chain breaks or cycles).
-/// Capped at a small number of hops to guard against pathological
-/// inputs.
 fn resolve_env(name: String, env: Env) -> LocalBinding {
-  resolve_env_loop(name, env, 16)
+  dict.get(env, name) |> result.unwrap(BoundOpaque)
 }
 
-fn resolve_env_loop(name: String, env: Env, fuel: Int) -> LocalBinding {
-  use <- bool.guard(when: fuel <= 0, return: BoundOpaque)
-  case dict.get(env, name) {
-    Error(Nil) -> BoundOpaque
-    Ok(BoundAlias(name: next)) -> resolve_env_loop(next, env, fuel - 1)
-    Ok(binding) -> binding
-  }
-}
-
-/// Names introduced by a `use` expression (`use a, b <- cont`) are
-/// opaque — the values come from the callback callsite which we can't
-/// trace syntactically.
+/// `use` bindings come from the callback call-site, which we can't
+/// trace syntactically — mark them all opaque.
 fn bind_use_patterns(patterns: List(glance.UsePattern), env: Env) -> Env {
   list.fold(patterns, env, fn(acc, use_pattern) {
-    list.fold(pattern_bound_names(use_pattern.pattern), acc, fn(acc2, name) {
-      dict.insert(acc2, name, BoundOpaque)
-    })
+    fold_pattern_names(use_pattern.pattern, acc, bind_opaque)
   })
 }
 
-/// Collect every variable name a pattern introduces into scope.
-/// Destructuring patterns contribute all nested variable names.
-fn pattern_bound_names(pattern: glance.Pattern) -> List(String) {
+/// Walk a pattern and fold over every variable name it binds into
+/// scope, avoiding the intermediate `List(String)` a collect-then-fold
+/// would allocate.
+fn fold_pattern_names(
+  pattern: glance.Pattern,
+  acc: a,
+  step: fn(a, String) -> a,
+) -> a {
   case pattern {
-    glance.PatternVariable(name:, ..) -> [name]
-    glance.PatternAssignment(pattern: inner, name:, ..) -> [
-      name,
-      ..pattern_bound_names(inner)
-    ]
+    glance.PatternVariable(name:, ..) -> step(acc, name)
+    glance.PatternAssignment(pattern: inner, name:, ..) ->
+      fold_pattern_names(inner, step(acc, name), step)
     glance.PatternTuple(elements:, ..) ->
-      list.flat_map(elements, pattern_bound_names)
+      list.fold(elements, acc, fn(inner, p) {
+        fold_pattern_names(p, inner, step)
+      })
     glance.PatternList(elements:, tail:, ..) -> {
-      let head_names = list.flat_map(elements, pattern_bound_names)
+      let head =
+        list.fold(elements, acc, fn(inner, p) {
+          fold_pattern_names(p, inner, step)
+        })
       case tail {
-        Some(tail_pattern) ->
-          list.append(head_names, pattern_bound_names(tail_pattern))
-        None -> head_names
+        Some(tail_pattern) -> fold_pattern_names(tail_pattern, head, step)
+        None -> head
       }
     }
     glance.PatternVariant(arguments:, ..) ->
-      list.flat_map(arguments, fn(field) {
+      list.fold(arguments, acc, fn(inner, field) {
         case field {
-          glance.LabelledField(item:, ..) -> pattern_bound_names(item)
-          glance.ShorthandField(label:, ..) -> [label]
-          glance.UnlabelledField(item:) -> pattern_bound_names(item)
+          glance.LabelledField(item:, ..) ->
+            fold_pattern_names(item, inner, step)
+          glance.ShorthandField(label:, ..) -> step(inner, label)
+          glance.UnlabelledField(item:) -> fold_pattern_names(item, inner, step)
         }
       })
     glance.PatternConcatenate(prefix_name:, rest_name:, ..) -> {
-      let prefix_names = case prefix_name {
-        Some(glance.Named(n)) -> [n]
-        _ -> []
+      let with_prefix = case prefix_name {
+        Some(glance.Named(n)) -> step(acc, n)
+        _ -> acc
       }
-      let rest_names = case rest_name {
-        glance.Named(n) -> [n]
-        glance.Discarded(_) -> []
+      case rest_name {
+        glance.Named(n) -> step(with_prefix, n)
+        glance.Discarded(_) -> with_prefix
       }
-      list.append(prefix_names, rest_names)
     }
     glance.PatternBitString(segments:, ..) ->
-      list.flat_map(segments, fn(segment) { pattern_bound_names(segment.0) })
+      list.fold(segments, acc, fn(inner, segment) {
+        fold_pattern_names(segment.0, inner, step)
+      })
     glance.PatternInt(..)
     | glance.PatternFloat(..)
     | glance.PatternString(..)
-    | glance.PatternDiscard(..) -> []
+    | glance.PatternDiscard(..) -> acc
   }
 }
 
@@ -693,11 +631,10 @@ fn extract_from_expression(
       )
 
     // Closure: effects in body contribute to enclosing function
-    glance.Fn(body: statements, ..) ->
-      walk_child_scope(statements, context, env)
+    glance.Fn(body: statements, ..) -> walk_scope(statements, context, env)
 
     // Block
-    glance.Block(statements:, ..) -> walk_child_scope(statements, context, env)
+    glance.Block(statements:, ..) -> walk_scope(statements, context, env)
 
     // Case expression
     glance.Case(subjects:, clauses:, ..) ->
