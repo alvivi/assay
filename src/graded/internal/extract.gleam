@@ -2,6 +2,7 @@ import filepath
 import glance.{
   type Clause, type Expression, type Field, type Module, type Statement,
 }
+import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -9,9 +10,9 @@ import gleam/result
 import gleam/string
 import graded/internal/types.{
   type CallArgument, type FieldCall, type LocalBinding, type LocalCall,
-  type QualifiedName, type ResolvedCall, BoundOpaque, CallArgument,
-  ConstructorRef, FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression,
-  QualifiedName, ResolvedCall,
+  type QualifiedName, type ResolvedCall, BoundAlias, BoundFunctionRef,
+  BoundOpaque, CallArgument, ConstructorRef, FieldCall, FunctionRef, LocalCall,
+  LocalRef, OtherExpression, QualifiedName, ResolvedCall,
 }
 
 /// Binding environment: local names introduced by `let` bindings inside
@@ -147,6 +148,29 @@ fn is_constructor_name(name: String) -> Bool {
   case string.first(name) {
     Ok(char) -> char == string.uppercase(char) && char != string.lowercase(char)
     Error(Nil) -> False
+  }
+}
+
+/// Resolve a bare-name call, consulting the local binding env first.
+/// If the name was introduced by a `let` that captured a function
+/// reference, the call becomes a ResolvedCall; otherwise fall through
+/// to the import-based resolution.
+fn resolve_variable_call(
+  name: String,
+  span: glance.Span,
+  context: ImportContext,
+  env: Env,
+) -> ExtractResult {
+  case resolve_env(name, env) {
+    BoundFunctionRef(name: qualified) ->
+      ExtractResult(
+        resolved: [ResolvedCall(qualified, span)],
+        local: [],
+        field: [],
+        references: [],
+        call_args: dict.new(),
+      )
+    _ -> resolve_unqualified_call(name, span, context)
   }
 }
 
@@ -300,18 +324,83 @@ fn extract_from_statement(
   }
 }
 
-/// Record the names introduced by a `let` pattern. For commit 1 every
-/// bound name is stored as `BoundOpaque` — shadowing still works (later
-/// `let`s overwrite earlier bindings) but no classification happens yet.
+/// Record the names introduced by a `let` pattern.
+///
+/// A `PatternVariable` (simple `let x = rhs`) is classified via
+/// `classify_rhs`. Destructuring patterns (`let #(a, b) = ...`,
+/// `let Validator(..) = ...`) always bind their names to `BoundOpaque`
+/// — tracking values through destructuring is out of scope.
 fn bind_assignment(
   pattern: glance.Pattern,
-  _value: glance.Expression,
-  _context: ImportContext,
+  value: glance.Expression,
+  context: ImportContext,
   env: Env,
 ) -> Env {
-  list.fold(pattern_bound_names(pattern), env, fn(acc, name) {
-    dict.insert(acc, name, BoundOpaque)
-  })
+  case pattern {
+    glance.PatternVariable(name:, ..) ->
+      dict.insert(env, name, classify_rhs(value, context, env))
+    _ ->
+      list.fold(pattern_bound_names(pattern), env, fn(acc, name) {
+        dict.insert(acc, name, BoundOpaque)
+      })
+  }
+}
+
+/// Classify the right-hand side of a simple `let name = rhs`. Anything
+/// not recognised becomes `BoundOpaque`, which deliberately shadows
+/// any earlier binding of the same name.
+fn classify_rhs(
+  expression: glance.Expression,
+  context: ImportContext,
+  env: Env,
+) -> LocalBinding {
+  case expression {
+    glance.FieldAccess(
+      container: glance.Variable(_, alias),
+      label: function_name,
+      ..,
+    ) ->
+      case is_constructor_name(function_name) {
+        True -> BoundOpaque
+        False ->
+          case dict.get(context.aliases, alias) {
+            Ok(module_path) ->
+              BoundFunctionRef(name: QualifiedName(module_path, function_name))
+            Error(Nil) -> BoundOpaque
+          }
+      }
+    glance.Variable(_, name) ->
+      case is_constructor_name(name) {
+        True -> BoundOpaque
+        False ->
+          case dict.get(context.unqualified, name) {
+            Ok(qualified_name) -> BoundFunctionRef(name: qualified_name)
+            Error(Nil) ->
+              case dict.has_key(env, name) {
+                True -> BoundAlias(name:)
+                False -> BoundOpaque
+              }
+          }
+      }
+    _ -> BoundOpaque
+  }
+}
+
+/// Chase a chain of `BoundAlias` bindings to their root. Returns the
+/// resolved binding (or `BoundOpaque` if the chain breaks or cycles).
+/// Capped at a small number of hops to guard against pathological
+/// inputs.
+fn resolve_env(name: String, env: Env) -> LocalBinding {
+  resolve_env_loop(name, env, 16)
+}
+
+fn resolve_env_loop(name: String, env: Env, fuel: Int) -> LocalBinding {
+  use <- bool.guard(when: fuel <= 0, return: BoundOpaque)
+  case dict.get(env, name) {
+    Error(Nil) -> BoundOpaque
+    Ok(BoundAlias(name: next)) -> resolve_env_loop(next, env, fuel - 1)
+    Ok(binding) -> binding
+  }
 }
 
 /// Names introduced by a `use` expression (`use a, b <- cont`) are
@@ -400,7 +489,7 @@ fn extract_from_expression(
     // Unqualified or local call: println(x) or helper(x)
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
       merge_with_args(
-        resolve_unqualified_call(name, span, context),
+        resolve_variable_call(name, span, context, env),
         extract_from_arguments(arguments, context, env),
         span,
         classify_arguments(arguments, context, env, 0),
@@ -551,7 +640,7 @@ fn extract_pipe_target(
 
     glance.Variable(location: span, name:) ->
       attach_pipe_args(
-        resolve_unqualified_call(name, span, context),
+        resolve_variable_call(name, span, context, env),
         span,
         pipe_args,
       )
@@ -576,7 +665,7 @@ fn extract_pipe_target(
 
     glance.Call(location: span, function: glance.Variable(_, name), arguments:) ->
       merge_with_args(
-        resolve_unqualified_call(name, span, context),
+        resolve_variable_call(name, span, context, env),
         extract_from_arguments(arguments, context, env),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),
@@ -628,7 +717,7 @@ fn classify_arguments(
 fn classify_expression(
   expression: Expression,
   context: ImportContext,
-  _env: Env,
+  env: Env,
 ) -> types.ArgumentValue {
   case expression {
     glance.FieldAccess(
@@ -651,7 +740,12 @@ fn classify_expression(
         False ->
           case dict.get(context.unqualified, name) {
             Ok(qualified_name) -> FunctionRef(name: qualified_name)
-            Error(Nil) -> LocalRef(name:)
+            Error(Nil) ->
+              case resolve_env(name, env) {
+                BoundFunctionRef(name: qualified) ->
+                  FunctionRef(name: qualified)
+                _ -> LocalRef(name:)
+              }
           }
       }
     _ -> OtherExpression
