@@ -9,10 +9,11 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import graded/internal/types.{
-  type CallArgument, type FieldCall, type LocalBinding, type LocalCall,
-  type QualifiedName, type ResolvedCall, BoundAlias, BoundFunctionRef,
-  BoundOpaque, CallArgument, ConstructorRef, FieldCall, FunctionRef, LocalCall,
-  LocalRef, OtherExpression, QualifiedName, ResolvedCall,
+  type ArgumentValue, type CallArgument, type FieldCall, type LocalBinding,
+  type LocalCall, type QualifiedName, type ResolvedCall, BoundAlias,
+  BoundConstructor, BoundFunctionRef, BoundOpaque, CallArgument, ConstructorRef,
+  FieldCall, FunctionRef, LocalCall, LocalRef, OtherExpression, QualifiedName,
+  ResolvedCall,
 }
 
 /// Binding environment: local names introduced by `let` bindings inside
@@ -204,18 +205,21 @@ fn resolve_unqualified_call(
 }
 
 /// Resolve a qualified `alias.label` call or pipe target. Constructor
-/// labels short-circuit to empty (pure value creation). Known aliases
-/// produce a cross-module ResolvedCall; unknown aliases fall back to a
-/// FieldCall on a local variable.
+/// labels short-circuit to empty (pure value creation). Import aliases
+/// produce a cross-module ResolvedCall. If `alias` is a local binding
+/// (a record constructed in this function), look up the field in the
+/// binding env and resolve based on the field's value. Otherwise fall
+/// back to a FieldCall.
 fn resolve_qualified_call(
   alias: String,
   function_name: String,
   span: glance.Span,
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case is_constructor_name(function_name) {
     True -> empty()
-    False -> qualified_call_lookup(alias, function_name, span, context)
+    False -> qualified_call_lookup(alias, function_name, span, context, env)
   }
 }
 
@@ -224,6 +228,7 @@ fn qualified_call_lookup(
   function_name: String,
   span: glance.Span,
   context: ImportContext,
+  env: Env,
 ) -> ExtractResult {
   case dict.get(context.aliases, alias) {
     Ok(module_path) ->
@@ -237,10 +242,54 @@ fn qualified_call_lookup(
         call_args: dict.new(),
       )
     Error(Nil) ->
+      case resolve_env(alias, env) {
+        BoundConstructor(fields:, ..) ->
+          resolve_constructor_field_call(alias, function_name, span, fields)
+        _ ->
+          ExtractResult(
+            resolved: [],
+            local: [],
+            field: [FieldCall(alias, function_name, span)],
+            references: [],
+            call_args: dict.new(),
+          )
+      }
+  }
+}
+
+/// Resolve a labelled field of a locally-constructed record to a call.
+/// If the stored value is a function reference or a local name, emit a
+/// resolved or local call; otherwise fall back to a FieldCall so the
+/// type-level `type Foo.field : [...]` annotation path still applies.
+fn resolve_constructor_field_call(
+  alias: String,
+  label: String,
+  span: glance.Span,
+  fields: Dict(String, ArgumentValue),
+) -> ExtractResult {
+  case dict.get(fields, label) {
+    Ok(FunctionRef(name: qualified)) ->
+      ExtractResult(
+        resolved: [ResolvedCall(qualified, span)],
+        local: [],
+        field: [],
+        references: [],
+        call_args: dict.new(),
+      )
+    Ok(LocalRef(name: local_name)) ->
+      ExtractResult(
+        resolved: [],
+        local: [LocalCall(local_name, span)],
+        field: [],
+        references: [],
+        call_args: dict.new(),
+      )
+    Ok(ConstructorRef) -> empty()
+    Ok(OtherExpression) | Error(Nil) ->
       ExtractResult(
         resolved: [],
         local: [],
-        field: [FieldCall(alias, function_name, span)],
+        field: [FieldCall(alias, label, span)],
         references: [],
         call_args: dict.new(),
       )
@@ -382,8 +431,83 @@ fn classify_rhs(
               }
           }
       }
+    // Bare-constructor call: `Validator(to_error: MyError)`.
+    glance.Call(function: glance.Variable(_, name), arguments:, ..) ->
+      case is_constructor_name(name) {
+        True ->
+          classify_constructor(
+            type_name: name,
+            module: None,
+            arguments: arguments,
+            context: context,
+            env: env,
+          )
+        False -> BoundOpaque
+      }
+    // Qualified-constructor call: `other.Validator(to_error: MyError)`.
+    glance.Call(
+      function: glance.FieldAccess(
+        container: glance.Variable(_, alias),
+        label: ctor,
+        ..,
+      ),
+      arguments:,
+      ..,
+    ) ->
+      case is_constructor_name(ctor) {
+        True ->
+          classify_constructor(
+            type_name: ctor,
+            module: dict.get(context.aliases, alias) |> option.from_result,
+            arguments: arguments,
+            context: context,
+            env: env,
+          )
+        False -> BoundOpaque
+      }
     _ -> BoundOpaque
   }
+}
+
+/// Build a BoundConstructor from a constructor call's arguments.
+/// Labelled arguments populate `fields`; unlabelled ones go to
+/// `positional` in source order. Shorthand (`Validator(to_error:)`)
+/// records `OtherExpression` for the value.
+fn classify_constructor(
+  type_name type_name: String,
+  module module: Option(String),
+  arguments arguments: List(Field(Expression)),
+  context context: ImportContext,
+  env env: Env,
+) -> LocalBinding {
+  let #(fields, positional) =
+    list.fold(arguments, #(dict.new(), []), fn(acc, field) {
+      let #(fields_acc, positional_acc) = acc
+      case field {
+        glance.LabelledField(label:, item:, ..) -> #(
+          dict.insert(
+            fields_acc,
+            label,
+            classify_expression(item, context, env),
+          ),
+          positional_acc,
+        )
+        glance.ShorthandField(label:, ..) -> #(
+          dict.insert(fields_acc, label, OtherExpression),
+          positional_acc,
+        )
+        glance.UnlabelledField(item:) -> #(fields_acc, [
+          classify_expression(item, context, env),
+          ..positional_acc
+        ])
+      }
+    })
+  BoundConstructor(
+    type_name: type_name,
+    module: module,
+    fields: fields,
+    positional: list.reverse(positional),
+  )
 }
 
 /// Chase a chain of `BoundAlias` bindings to their root. Returns the
@@ -480,7 +604,7 @@ fn extract_from_expression(
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context),
+        resolve_qualified_call(alias, function_name, span, context, env),
         extract_from_arguments(arguments, context, env),
         span,
         classify_arguments(arguments, context, env, 0),
@@ -633,7 +757,7 @@ fn extract_pipe_target(
       label: function_name,
     ) ->
       attach_pipe_args(
-        resolve_qualified_call(alias, function_name, span, context),
+        resolve_qualified_call(alias, function_name, span, context, env),
         span,
         pipe_args,
       )
@@ -657,7 +781,7 @@ fn extract_pipe_target(
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context),
+        resolve_qualified_call(alias, function_name, span, context, env),
         extract_from_arguments(arguments, context, env),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),

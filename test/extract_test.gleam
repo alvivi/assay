@@ -371,6 +371,50 @@ pub fn target() {
   |> should.equal(["f"])
 }
 
+pub fn constructor_field_call_resolves_test() {
+  let src =
+    "import gleam/io
+pub type Validator { Validator(to_error: fn(Int) -> Nil) }
+pub fn target() {
+  let v = Validator(to_error: io.println)
+  v.to_error(1)
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+  result.field |> should.equal([])
+}
+
+pub fn constructor_field_call_unresolved_falls_back_test() {
+  let src =
+    "pub type Validator { Validator(to_error: fn(Int) -> Nil) }
+pub fn target() {
+  let v = Validator(to_error: some_closure())
+  v.to_error(1)
+}"
+  let result = parse_and_extract(src)
+  // The to_error value is a call result — OtherExpression — so we
+  // fall back to a FieldCall so type-level annotations can still apply.
+  result.field
+  |> list.map(fn(f) { #(f.object, f.label) })
+  |> should.equal([#("v", "to_error")])
+}
+
+pub fn qualified_constructor_field_call_resolves_test() {
+  let src =
+    "import gleam/io
+import other
+pub fn target() {
+  let v = other.Validator(to_error: io.println)
+  v.to_error(1)
+}"
+  let result = parse_and_extract(src)
+  result.resolved
+  |> list.map(fn(r) { r.name })
+  |> should.equal([QualifiedName("gleam/io", "println")])
+}
+
 pub fn alias_as_argument_classified_as_function_ref_test() {
   let src =
     "import gleam/io
