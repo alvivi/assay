@@ -1,22 +1,18 @@
-//// Package-interface-backed signature registry.
+//// Glance-backed signature registry.
 ////
-//// Loads type signatures from `gleam export package-interface` JSON output
-//// so the checker can tell which function parameters are themselves
-//// function-typed. This powers call-site effect substitution and
-//// auto-inference of polymorphic signatures: knowing a parameter's type
-//// is `fn(...) -> ...` lets graded bind an effect variable at the
-//// definition site and substitute the caller's concrete argument at
-//// each call site.
+//// Parses Gleam source with glance to learn which function parameters
+//// are themselves function-typed. This powers call-site effect
+//// substitution and auto-inference of polymorphic signatures: knowing a
+//// parameter's type is `fn(...) -> ...` lets graded bind an effect
+//// variable at the definition site and substitute the caller's
+//// concrete argument at each call site.
 ////
-//// This module also exposes a glance-AST helper for detecting fn-typed
-//// parameters on locally-defined functions without type info from the
-//// package interface (e.g. private functions not in the exported JSON).
+//// Project modules are parsed during `run_infer` / `run`; dependency
+//// modules are parsed from `build/packages/<dep>/src/` on demand.
 
 import filepath
 import glance.{type Function, type Module, FunctionType}
 import gleam/dict.{type Dict}
-import gleam/dynamic/decode
-import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/set.{type Set}
@@ -45,11 +41,10 @@ pub type ParameterInfo {
 
 /// Maps qualified function names to their parameter signatures.
 ///
-/// Only populated for functions whose signatures are known — public
-/// functions covered by a package-interface export. Private functions
-/// and third-party functions without an exported package interface are
-/// absent; callers fall back to glance-AST inspection or treat the
-/// parameters as opaque.
+/// Only populated for functions whose signatures are known — anything
+/// parsed successfully from project or dependency source. Functions
+/// absent from the registry fall back to glance-AST inspection at the
+/// definition site, or are treated as opaque at call sites.
 pub type SignatureRegistry {
   SignatureRegistry(signatures: Dict(QualifiedName, List(ParameterInfo)))
 }
@@ -93,116 +88,12 @@ pub fn fn_typed_param_names(
   }
 }
 
-// ──── JSON parsing ────
-
-/// Parse a `gleam export package-interface` JSON string into a registry.
-///
-/// The JSON schema: top-level `{ "name": ..., "modules": { "<path>":
-/// { "functions": { "<name>": { "parameters": [...], ... } } } } }`.
-/// Each parameter has a `type.kind` — `"fn"` marks fn-typed parameters;
-/// anything else (named, variable, tuple) is not.
-pub fn load_from_json_string(
-  json_string: String,
-) -> Result(SignatureRegistry, json.DecodeError) {
-  json.parse(json_string, package_interface_decoder())
-}
-
-/// Decoder for the minimal slice of package-interface JSON graded needs:
-/// just enough to extract `(module.function) -> [ParameterInfo]`.
-fn package_interface_decoder() -> decode.Decoder(SignatureRegistry) {
-  use modules <- decode.field(
-    "modules",
-    decode.dict(decode.string, module_decoder()),
-  )
-  let signatures =
-    dict.fold(modules, dict.new(), fn(acc, module_path, functions) {
-      dict.fold(functions, acc, fn(inner, fn_name, params) {
-        dict.insert(
-          inner,
-          QualifiedName(module: module_path, function: fn_name),
-          params,
-        )
-      })
-    })
-  decode.success(SignatureRegistry(signatures:))
-}
-
-/// Per-module slice: we only care about `functions` → name → parameter list.
-fn module_decoder() -> decode.Decoder(Dict(String, List(ParameterInfo))) {
-  use functions <- decode.optional_field(
-    "functions",
-    dict.new(),
-    decode.dict(decode.string, function_decoder()),
-  )
-  decode.success(functions)
-}
-
-/// Per-function slice: just `parameters`.
-fn function_decoder() -> decode.Decoder(List(ParameterInfo)) {
-  use params <- decode.optional_field(
-    "parameters",
-    [],
-    decode.list(parameter_decoder_indexed()),
-  )
-  decode.success(params)
-}
-
-/// Parameters have no intrinsic position in the JSON — it's their
-/// list index. We decode each to a `(label, is_fn_typed)` pair and
-/// assign positions after. To keep this as a single decoder, we
-/// decode an intermediate tuple and reindex in `load_from_json_string`.
-///
-/// The trick: use `decode.list` above, then post-process. But gleam's
-/// decode API doesn't expose indices mid-decode, so we decode each
-/// parameter to a placeholder position=0, then renumber below.
-fn parameter_decoder_indexed() -> decode.Decoder(ParameterInfo) {
-  use label <- decode.field("label", decode.optional(decode.string))
-  use type_kind <- decode.subfield(["type", "kind"], decode.string)
-  decode.success(ParameterInfo(
-    position: 0,
-    label: label,
-    name: None,
-    is_fn_typed: type_kind == "fn",
-  ))
-}
-
-/// After JSON decoding, parameter positions are all 0. This walks the
-/// registry and renumbers each parameter list by its index.
-pub fn renumber_positions(registry: SignatureRegistry) -> SignatureRegistry {
-  let fixed =
-    registry.signatures
-    |> dict.map_values(fn(_name, params) {
-      params
-      |> list.index_map(fn(param, i) {
-        ParameterInfo(
-          position: i,
-          label: param.label,
-          name: param.name,
-          is_fn_typed: param.is_fn_typed,
-        )
-      })
-    })
-  SignatureRegistry(signatures: fixed)
-}
-
-/// Convenience: parse JSON string and renumber positions. Prefer this
-/// over `load_from_json_string` when you want positions populated.
-pub fn from_json_string(
-  json_string: String,
-) -> Result(SignatureRegistry, json.DecodeError) {
-  case load_from_json_string(json_string) {
-    Ok(registry) -> Ok(renumber_positions(registry))
-    Error(e) -> Error(e)
-  }
-}
-
 // ──── Glance AST → SignatureRegistry ────
 
 /// Build a SignatureRegistry from a parsed project module. Used during
 /// `run_infer` / `run` to give the checker position information for
-/// every public function in the project — which powers positional
-/// argument matching at polymorphic call sites without needing a
-/// `gleam export package-interface` export.
+/// every function in the project — which powers positional argument
+/// matching at polymorphic call sites.
 pub fn from_glance_module(
   module_path: String,
   module: Module,
@@ -237,9 +128,8 @@ pub fn from_glance_module(
 /// glance AST type annotations. Returns names of parameters whose
 /// type annotation is `fn(...) -> ...`.
 ///
-/// Used for private functions and any function not covered by the
-/// package-interface registry. Parameters without explicit type
-/// annotations (or with non-function types) are omitted.
+/// Parameters without explicit type annotations (or with non-function
+/// types) are omitted.
 pub fn fn_typed_params_from_function(function: Function) -> Set(String) {
   function.parameters
   |> list.filter_map(fn(param) {
