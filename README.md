@@ -265,7 +265,7 @@ gleam run -m graded format --stdin            # format from stdin (editor integr
 
 graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glance/) — it walks the AST without type inference and without inter-procedural value flow. This keeps the tool simple and avoids depending on compiler internals, but leaves a few patterns unresolved:
 
-- **Field calls on locally-constructed records don't substitute.** `type Validator { Validator(to_error: fn(Int) -> err) }` — if you construct `let v = Validator(to_error: MyError)` and then call `v.to_error(42)`, graded can't yet bind `to_error` to `MyError` at the field-call site. Field effects come from type-level annotations (`type myapp.Validator.to_error : [...]`), which are declared once per type rather than per value.
+- **Cross-function record construction is opaque.** When `let v = Validator(to_error: MyError)` and the field call `v.to_error(42)` happen in the same function, graded binds the field to `MyError` and resolves the call. When the record is constructed in one function and passed to another (`foo(v)`), the receiving function only sees `v` as an opaque parameter. Use the type-level annotation (`type myapp.Validator.to_error : [...]`) for cross-function cases, or refactor the construction into the consuming function.
 
 - **No second-order polymorphism.** Effect variables are flat — `apply(f: [e]) : [e]` works, but a function whose callback itself takes a callback can't propagate effects transitively. Nested effect variables would require unification/fixpoint machinery (full effect inference, à la Koka or Granule), which is outside graded's deliberately lightweight design.
 
@@ -275,7 +275,7 @@ graded performs **syntax-level analysis** using [glance](https://hexdocs.pm/glan
 
 - **External code is opaque.** Erlang/JavaScript FFI implementations, pre-compiled dependencies without `.graded` files, and dynamically dispatched calls cannot be analyzed. Use `external effects` declarations to annotate these manually.
 
-In practice, idiomatic Gleam code (inline callbacks, direct calls, pipe chains, higher-order functions passing functions by name) is handled correctly. Function references passed to higher-order functions — previously the main gap — are now tracked: graded infers polymorphic signatures like `effects map(f: [e]) : [e]` and binds `e` at each call site from the concrete argument.
+In practice, idiomatic Gleam code (inline callbacks, direct calls, pipe chains, higher-order functions passing functions by name, validator/handler/config records constructed and used in the same function) is handled correctly. Function references passed to higher-order functions are tracked via auto-inferred polymorphic signatures (`effects map(f: [e]) : [e]`) and bound at each call site; locally-bound function-ref aliases (`let f = io.println; f(x)`), transitive aliases (`let g = f`), and field calls on same-function record constructions (`let v = Validator(to_error: E); v.to_error(x)`) also resolve.
 
 ## Future work
 
