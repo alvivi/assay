@@ -3,13 +3,14 @@
 The big picture for closing graded's remaining analysis gaps. Ordered by
 sequencing, not by size.
 
-Current state: **0.5.0** shipped first-order effect polymorphism —
+Current state: **0.6.0** shipped same-function value flow — function-ref
+aliases, locally-constructed record field resolution, and positional
+constructor arg mapping. **0.5.0** shipped first-order effect polymorphism —
 effect variables at function boundaries, call-site substitution for
 higher-order functions, dependency parameter positions via glance.
 
 The gaps that remain are documented in [README.md](./README.md#limitations):
 
-- Field calls on locally-constructed records don't substitute.
 - Nested (second-order) polymorphism — callbacks that take callbacks —
   isn't tracked.
 - Expression-level type info isn't available, which forces label/position
