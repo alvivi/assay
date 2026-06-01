@@ -74,6 +74,9 @@ pub fn lookup(
 
 /// Names of a function's fn-typed parameters. Returns an empty set if
 /// the function isn't in the registry (conservative: "we don't know").
+/// Prefers the argument label (canonical for cross-module calls), falling
+/// back to the in-body name when no label is declared. `position_from_registry`
+/// matches by either, so both forms round-trip.
 pub fn fn_typed_param_names(
   registry: SignatureRegistry,
   name: QualifiedName,
@@ -83,7 +86,9 @@ pub fn fn_typed_param_names(
     Some(params) ->
       params
       |> list.filter(fn(p) { p.is_fn_typed })
-      |> list.filter_map(fn(p) { option.to_result(p.label, Nil) })
+      |> list.filter_map(fn(p) {
+        option.to_result(option.or(p.label, p.name), Nil)
+      })
       |> set.from_list()
   }
 }

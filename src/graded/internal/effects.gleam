@@ -36,10 +36,13 @@ pub type KnowledgeBase {
 pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
   let #(dep_effects, dep_params) = load_dependency_effects(packages_directory)
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
+  let #(cat_effects, cat_pure, cat_params) =
+    load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: dict.merge(dep_effects, cat_effects),
-    param_bounds: dep_params,
+    // Deps take priority over catalog per the knowledge-base priority
+    // ordering in CLAUDE.md — dict.merge lets the second arg win.
+    param_bounds: dict.merge(cat_params, dep_params),
     type_fields: dict.new(),
     pure_modules: cat_pure,
   )
@@ -48,10 +51,11 @@ pub fn load_knowledge_base(packages_directory: String) -> KnowledgeBase {
 /// Build a knowledge base from the catalog only (no dependency scanning).
 pub fn empty_knowledge_base() -> KnowledgeBase {
   let catalog_dir = find_catalog_directory()
-  let #(cat_effects, cat_pure) = load_catalog(catalog_dir, "manifest.toml")
+  let #(cat_effects, cat_pure, cat_params) =
+    load_catalog(catalog_dir, "manifest.toml")
   KnowledgeBase(
     all_effects: cat_effects,
-    param_bounds: dict.new(),
+    param_bounds: cat_params,
     type_fields: dict.new(),
     pure_modules: cat_pure,
   )
@@ -356,41 +360,74 @@ fn find_catalog_directory() -> String {
   }
 }
 
+type CatalogAcc {
+  CatalogAcc(
+    ext_effects: Dict(QualifiedName, EffectSet),
+    pure_mods: Set(String),
+    poly_effects: Dict(QualifiedName, EffectSet),
+    poly_params: Dict(QualifiedName, List(ParamBound)),
+  )
+}
+
 fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
-) -> #(Dict(QualifiedName, EffectSet), Set(String)) {
+) -> #(
+  Dict(QualifiedName, EffectSet),
+  Set(String),
+  Dict(QualifiedName, List(ParamBound)),
+) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
     Ok(files) ->
       list.filter(files, fn(file) { string.ends_with(file, ".graded") })
     Error(_) -> []
   }
-
   let selected = resolve_catalog_files(catalog_files, installed_versions)
+  let initial = CatalogAcc(dict.new(), set.new(), dict.new(), dict.new())
+  let acc = list.fold(selected, initial, fold_catalog_file)
+  // Explicit `effects` annotations in the catalog take precedence over the
+  // module-level `external effects` pure markers.
+  let all_effects = dict.merge(acc.ext_effects, acc.poly_effects)
+  #(all_effects, acc.pure_mods, acc.poly_params)
+}
 
-  let all_externals =
-    list.flat_map(selected, fn(file_path) {
-      case simplifile.read(file_path) {
-        Error(_) -> []
-        Ok(content) ->
-          case annotation.parse_file(content) {
-            Error(_) -> []
-            Ok(graded_file) -> annotation.extract_externals(graded_file)
-          }
+/// Fold one catalog file into the accumulator. `external effects` lines
+/// feed module-level pure markers and specific function effects; `effects`
+/// lines with param bounds feed polymorphic higher-order entries. Files
+/// that fail to read or parse are silently skipped.
+fn fold_catalog_file(acc: CatalogAcc, file_path: String) -> CatalogAcc {
+  case simplifile.read(file_path) {
+    Error(_) -> acc
+    Ok(content) ->
+      case annotation.parse_file(content) {
+        Error(_) -> acc
+        Ok(graded_file) -> {
+          let kb =
+            with_externals(
+              KnowledgeBase(
+                all_effects: acc.ext_effects,
+                param_bounds: dict.new(),
+                type_fields: dict.new(),
+                pure_modules: acc.pure_mods,
+              ),
+              annotation.extract_externals(graded_file),
+            )
+          let #(poly_effects, poly_params) =
+            list.fold(
+              annotation.extract_annotations(graded_file),
+              #(acc.poly_effects, acc.poly_params),
+              fold_qualified_annotation,
+            )
+          CatalogAcc(
+            ext_effects: kb.all_effects,
+            pure_mods: kb.pure_modules,
+            poly_effects:,
+            poly_params:,
+          )
+        }
       }
-    })
-
-  // Reuse the same external dispatch logic as with_externals
-  let empty_kb =
-    KnowledgeBase(
-      all_effects: dict.new(),
-      param_bounds: dict.new(),
-      type_fields: dict.new(),
-      pure_modules: set.new(),
-    )
-  let merged = with_externals(empty_kb, all_externals)
-  #(merged.all_effects, merged.pure_modules)
+  }
 }
 
 fn resolve_catalog_files(
