@@ -644,11 +644,9 @@ fn resolve_unknown_local(
           // higher-order calls stay polymorphic through the transitive
           // analysis).
           let nested_bounds =
-            synthetic_fn_typed_bounds(
-              signatures.fn_typed_params_from_function(
-                local_definition.definition,
-              ),
-            )
+            synthetic_fn_typed_bounds(signatures.fn_typed_params_from_function(
+              local_definition.definition,
+            ))
           collect_effects(
             local_definition.definition,
             function_map,

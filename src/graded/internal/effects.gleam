@@ -372,7 +372,11 @@ type CatalogAcc {
 fn load_catalog(
   catalog_dir: String,
   manifest_path: String,
-) -> #(Dict(QualifiedName, EffectSet), Set(String), Dict(QualifiedName, List(ParamBound))) {
+) -> #(
+  Dict(QualifiedName, EffectSet),
+  Set(String),
+  Dict(QualifiedName, List(ParamBound)),
+) {
   let installed_versions = parse_manifest_versions(manifest_path)
   let catalog_files = case simplifile.get_files(catalog_dir) {
     Ok(files) ->

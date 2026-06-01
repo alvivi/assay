@@ -86,7 +86,9 @@ pub fn fn_typed_param_names(
     Some(params) ->
       params
       |> list.filter(fn(p) { p.is_fn_typed })
-      |> list.filter_map(fn(p) { option.to_result(option.or(p.label, p.name), Nil) })
+      |> list.filter_map(fn(p) {
+        option.to_result(option.or(p.label, p.name), Nil)
+      })
       |> set.from_list()
   }
 }
