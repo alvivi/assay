@@ -98,6 +98,7 @@ pub fn graded_is_imprecise_today_test() {
       [],
       signatures.empty(),
       dict.new(),
+      dict.new(),
     )
 
   let run_effects =

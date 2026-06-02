@@ -52,6 +52,7 @@ pub fn infer(
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
   module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -79,8 +80,15 @@ pub fn infer(
     // and are excluded from auto-detection.
     let declared_bound_names =
       param_bounds |> list.map(fn(b) { b.name }) |> set.from_list()
+    // Function-typed parameters: girard's inferred signature (covers params
+    // with no `fn(...)` annotation) unioned with the syntactic detection (the
+    // fallback when girard skipped this function).
     let fn_typed_params =
       signatures.fn_typed_params_from_function(definition.definition)
+      |> set.union(typeinfo.fn_typed_params(
+        girard_fn_typed,
+        definition.definition.name,
+      ))
       |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
     let effective_bounds =
       list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))

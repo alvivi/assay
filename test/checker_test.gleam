@@ -1,5 +1,6 @@
 import generators
 import girard
+import girard/types as girard_types
 import glance
 import gleam/dict
 import gleam/list
@@ -151,7 +152,14 @@ pub fn infer_pure_function_test() {
 pub fn view(items) { list.map(items, fn(x) { x }) }"
   let assert Ok(module) = glance.module(source)
   let inferred =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.kind |> should.equal(Effects)
   annotation.function |> should.equal("view")
@@ -164,7 +172,14 @@ pub fn infer_effectful_function_test() {
 pub fn greet() { io.println(\"hi\") }"
   let assert Ok(module) = glance.module(source)
   let inferred =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
 }
@@ -176,7 +191,14 @@ pub fn view() { helper() }
 fn helper() { io.println(\"x\") }"
   let assert Ok(module) = glance.module(source)
   let inferred =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.function |> should.equal("view")
 }
@@ -201,18 +223,79 @@ pub fn infer_uses_param_bounds_test() {
       existing_checks,
       signatures.empty(),
       dict.new(),
+      dict.new(),
     )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_without_bounds_gets_unknown_test() {
+  // Without girard's fn-typed info, an unannotated `f` isn't recognised as
+  // higher-order, so the call falls through to [Unknown].
   let source = "pub fn apply(f, x) { f(x) }"
   let assert Ok(module) = glance.module(source)
   let inferred =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+/// Build the fn-typed-param map girard supplies, the way build_type_index does:
+/// a parameter is fn-typed when its inferred type is itself a `Fn`.
+fn girard_fn_typed_for(
+  module: glance.Module,
+) -> dict.Dict(String, set.Set(String)) {
+  case girard.annotate_module(module, girard.default_options()) {
+    Ok(annotated) ->
+      list.fold(annotated.functions, dict.new(), fn(acc, entry) {
+        let #(name, scheme) = entry
+        case scheme.type_ {
+          girard_types.Fn(argument_types, _return) -> {
+            let assert Ok(definition) =
+              list.find(module.functions, fn(d) { d.definition.name == name })
+            let names =
+              list.zip(definition.definition.parameters, argument_types)
+              |> list.filter_map(fn(pair) {
+                case pair.1, { pair.0 }.name {
+                  girard_types.Fn(_, _), glance.Named(parameter_name) ->
+                    Ok(parameter_name)
+                  _, _ -> Error(Nil)
+                }
+              })
+              |> set.from_list()
+            dict.insert(acc, name, names)
+          }
+          _ -> acc
+        }
+      })
+    Error(_) -> dict.new()
+  }
+}
+
+pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
+  // The enhancement: `f` has no `fn(...)` annotation, but girard infers it is a
+  // function, so `apply` gets a polymorphic signature instead of [Unknown].
+  let source = "pub fn apply(f, x) { f(x) }"
+  let assert Ok(module) = glance.module(source)
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      girard_fn_typed_for(module),
+    )
+  let assert [annotation] = inferred
+  annotation.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
 // Higher-order / parameter bound tests
@@ -794,7 +877,14 @@ pub fn infer_matches_actual_effects_test() {
     Ok(module) -> {
       let kb = build_kb(calls)
       let inferred =
-        checker.infer(module, kb, [], signatures.empty(), dict.new())
+        checker.infer(
+          module,
+          kb,
+          [],
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let assert [ann] = inferred
       ann.function |> should.equal("test_fn")
       ann.effects |> should.equal(actual_effects(calls))
@@ -864,6 +954,7 @@ pub fn infer_terminates_with_cycles_test() {
           [],
           signatures.empty(),
           dict.new(),
+          dict.new(),
         )
       let assert [ann] = inferred
       ann.function |> should.equal("a")
@@ -896,7 +987,14 @@ pub fn check_terminates_with_cycles_test() {
 fn infer_single(source: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann
 }
 
@@ -975,6 +1073,7 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       knowledge_base(),
       [existing],
       signatures.empty(),
+      dict.new(),
       dict.new(),
     )
   ann.effects |> should.equal(Specific(set.from_list(["Stdout"])))
@@ -1098,7 +1197,14 @@ pub fn new() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, polymorphic_kb(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      polymorphic_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.new()))
 }
 
@@ -1117,7 +1223,14 @@ pub fn new() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, polymorphic_kb(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      polymorphic_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -1162,7 +1275,14 @@ pub fn outer() -> MyError {
 "
   let assert Ok(module) = glance.module(source)
   let inferred =
-    checker.infer(module, knowledge_base(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
   outer.effects |> should.equal(Specific(set.new()))
 }
@@ -1180,7 +1300,14 @@ pub fn run() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, two_callback_kb(), [], signatures.empty(), dict.new())
+    checker.infer(
+      module,
+      two_callback_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
 
@@ -1196,7 +1323,14 @@ fn list_registry() -> signatures.SignatureRegistry {
 fn infer_single_with_list(source: String) -> types.EffectAnnotation {
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, knowledge_base(), [], list_registry(), dict.new())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      list_registry(),
+      dict.new(),
+      dict.new(),
+    )
   ann
 }
 
@@ -1373,7 +1507,7 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let assert [ann] = checker.infer(module, kb, [], reg, dict.new())
+  let assert [ann] = checker.infer(module, kb, [], reg, dict.new(), dict.new())
   ann.function |> should.equal("run")
   ann.effects
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))

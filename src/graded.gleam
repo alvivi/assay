@@ -225,6 +225,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             kb,
             registry,
             typeinfo.for_module(type_info, module_path),
+            typeinfo.fn_typed_for_module(type_info, module_path),
           ))
           // Prepend new_public so each iteration is O(|new_public|) instead
           // of O(|acc|); final order doesn't matter, merge_inferred keys by
@@ -392,12 +393,11 @@ fn build_type_index(
       let #(module_path, #(_gleam_path, module)) = pair
       #(module_path, module)
     })
-  let modules =
-    girard.annotate_package(entries, options)
-    |> dict.to_list()
-    |> list.map(fn(pair) {
+  let results = girard.annotate_package(entries, options) |> dict.to_list()
+  let span_types =
+    list.map(results, fn(pair) {
       let #(module_path, module_result) = pair
-      let span_types =
+      let types =
         list.fold(
           module_result.annotated.expressions,
           dict.new(),
@@ -409,9 +409,66 @@ fn build_type_index(
             )
           },
         )
-      #(module_path, span_types)
+      #(module_path, types)
     })
-  typeinfo.from_modules(modules)
+  let fn_typed =
+    list.filter_map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      case dict.get(index, module_path) {
+        Ok(#(_gleam_path, module)) ->
+          Ok(#(module_path, fn_typed_params_from_schemes(module_result, module)))
+        Error(Nil) -> Error(Nil)
+      }
+    })
+  typeinfo.from_modules(span_types, fn_typed)
+}
+
+/// From girard's inferred top-level signatures, the set of function-typed
+/// parameter names for each function — including parameters with no syntactic
+/// `fn(...)` annotation, which the glance-only detection misses. A parameter is
+/// function-typed when its inferred type (positional in the function's `Fn`
+/// type) is itself a `Fn`.
+fn fn_typed_params_from_schemes(
+  module_result: girard.ModuleResult,
+  module: glance.Module,
+) -> Dict(String, Set(String)) {
+  list.fold(module_result.annotated.functions, dict.new(), fn(acc, entry) {
+    let #(name, scheme) = entry
+    case scheme.type_, find_function(module, name) {
+      girard_types.Fn(argument_types, _return), Ok(function) ->
+        dict.insert(acc, name, fn_typed_names(function, argument_types))
+      _, _ -> acc
+    }
+  })
+}
+
+/// The names of `function`'s parameters whose inferred type (positional in
+/// `argument_types`) is itself a `Fn`.
+fn fn_typed_names(
+  function: glance.Function,
+  argument_types: List(girard_types.Type),
+) -> Set(String) {
+  list.zip(function.parameters, argument_types)
+  |> list.filter_map(fn(pair) {
+    let #(parameter, argument_type) = pair
+    case argument_type, parameter.name {
+      girard_types.Fn(_, _), glance.Named(parameter_name) -> Ok(parameter_name)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+fn find_function(
+  module: glance.Module,
+  name: String,
+) -> Result(glance.Function, Nil) {
+  list.find_map(module.functions, fn(definition) {
+    case definition.definition.name == name {
+      True -> Ok(definition.definition)
+      False -> Error(Nil)
+    }
+  })
 }
 
 /// A girard `Resolver` that resolves graded's own project modules from `index`
@@ -473,9 +530,17 @@ fn infer_one_module(
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
   module_types: Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: Dict(String, Set(String)),
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
   let inferred =
-    checker.infer(module, knowledge_base, [], registry, module_types)
+    checker.infer(
+      module,
+      knowledge_base,
+      [],
+      registry,
+      module_types,
+      girard_fn_typed,
+    )
 
   let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
@@ -765,7 +830,14 @@ fn infer_path_dep_module(
     Ok(#(module, checks)) -> {
       // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
       let annotations =
-        checker.infer(module, kb, checks, signatures.empty(), dict.new())
+        checker.infer(
+          module,
+          kb,
+          checks,
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let module_dict =
         list.fold(annotations, dict.new(), fn(d, annotation) {
           dict.insert(
