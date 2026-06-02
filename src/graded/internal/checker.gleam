@@ -10,6 +10,7 @@ import gleam/string
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
 import graded/internal/signatures.{type SignatureRegistry}
+import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
@@ -22,7 +23,7 @@ pub fn check(
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -50,7 +51,7 @@ pub fn infer(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
-  module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -161,7 +162,7 @@ fn check_annotation(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
@@ -250,7 +251,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
-  module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
@@ -626,7 +627,7 @@ fn resolve_unknown_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(#(ResolvedCall, EffectSet)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
@@ -675,28 +676,64 @@ fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
   knowledge_base: KnowledgeBase,
-  // Threaded for Stage A (type-directed receiver resolution); unread in A0.
-  _module_types: dict.Dict(Int, girard_types.Type),
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> EffectSet {
   let unknown = types.from_labels(["Unknown"])
-  let param =
+  // 1. girard's inferred nominal type for the receiver expression, looked up by
+  //    its span. Works for any receiver (let-bound from a call, pipe, return),
+  //    not just directly-annotated parameters. girard can only upgrade
+  //    [Unknown] here; an absent span (function girard skipped) falls through.
+  let from_types = case
+    typeinfo.receiver_type(
+      module_types,
+      field_call.receiver_span.start,
+      field_call.receiver_span.end,
+    )
+  {
+    Some(type_name) ->
+      effects.lookup_type_field(knowledge_base, type_name, field_call.label)
+    None -> effects.Unknown
+  }
+  case from_types {
+    effects.Known(effect_set) -> effect_set
+    effects.Unknown ->
+      // 2. Fall back to the receiver's syntactic parameter type annotation.
+      case syntactic_param_type(function, field_call.object) {
+        Some(type_name) ->
+          case
+            effects.lookup_type_field(
+              knowledge_base,
+              type_name,
+              field_call.label,
+            )
+          {
+            effects.Known(effect_set) -> effect_set
+            effects.Unknown -> unknown
+          }
+        None -> unknown
+      }
+  }
+}
+
+/// The nominal type name declared on the function parameter named `object`, if
+/// it carries a `NamedType` annotation. The syntax-level fallback for receivers
+/// girard could not type.
+fn syntactic_param_type(
+  function: Function,
+  object: String,
+) -> option.Option(String) {
+  case
     list.find(function.parameters, fn(param) {
       case param.name {
-        glance.Named(name) -> name == field_call.object
+        glance.Named(name) -> name == object
         glance.Discarded(_) -> False
       }
     })
-  case param {
+  {
     Ok(glance.FunctionParameter(
       type_: Some(glance.NamedType(name: type_name, ..)),
       ..,
-    )) ->
-      case
-        effects.lookup_type_field(knowledge_base, type_name, field_call.label)
-      {
-        effects.Known(effect_set) -> effect_set
-        effects.Unknown -> unknown
-      }
-    _ -> unknown
+    )) -> Some(type_name)
+    _ -> None
   }
 }

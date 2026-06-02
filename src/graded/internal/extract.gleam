@@ -222,12 +222,21 @@ fn resolve_qualified_call(
   alias: String,
   function_name: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
   case is_constructor_name(function_name) {
     True -> empty()
-    False -> qualified_call_lookup(alias, function_name, span, context, env)
+    False ->
+      qualified_call_lookup(
+        alias,
+        function_name,
+        span,
+        receiver_span,
+        context,
+        env,
+      )
   }
 }
 
@@ -235,6 +244,7 @@ fn qualified_call_lookup(
   alias: String,
   function_name: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   context: ImportContext,
   env: Env,
 ) -> ExtractResult {
@@ -252,12 +262,18 @@ fn qualified_call_lookup(
     Error(Nil) ->
       case resolve_env(alias, env) {
         BoundConstructor(fields:) ->
-          resolve_constructor_field_call(alias, function_name, span, fields)
+          resolve_constructor_field_call(
+            alias,
+            function_name,
+            span,
+            receiver_span,
+            fields,
+          )
         _ ->
           ExtractResult(
             resolved: [],
             local: [],
-            field: [FieldCall(alias, function_name, span)],
+            field: [FieldCall(alias, function_name, span, receiver_span)],
             references: [],
             call_args: dict.new(),
           )
@@ -271,6 +287,7 @@ fn resolve_constructor_field_call(
   alias: String,
   label: String,
   span: glance.Span,
+  receiver_span: glance.Span,
   fields: Dict(String, ArgumentValue),
 ) -> ExtractResult {
   case dict.get(fields, label) {
@@ -295,7 +312,7 @@ fn resolve_constructor_field_call(
       ExtractResult(
         resolved: [],
         local: [],
-        field: [FieldCall(alias, label, span)],
+        field: [FieldCall(alias, label, span, receiver_span)],
         references: [],
         call_args: dict.new(),
       )
@@ -579,14 +596,21 @@ fn extract_from_expression(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
-        container: glance.Variable(_, alias),
+        container: glance.Variable(receiver_span, alias),
         label: function_name,
         ..,
       ),
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         extract_from_arguments(arguments, context, env),
         span,
         classify_arguments(arguments, context, env, 0),
@@ -734,11 +758,18 @@ fn extract_pipe_target(
   case expression {
     glance.FieldAccess(
       location: span,
-      container: glance.Variable(_, alias),
+      container: glance.Variable(receiver_span, alias),
       label: function_name,
     ) ->
       attach_pipe_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         span,
         pipe_args,
       )
@@ -755,14 +786,21 @@ fn extract_pipe_target(
     glance.Call(
       location: span,
       function: glance.FieldAccess(
-        container: glance.Variable(_, alias),
+        container: glance.Variable(receiver_span, alias),
         label: function_name,
         ..,
       ),
       arguments:,
     ) ->
       merge_with_args(
-        resolve_qualified_call(alias, function_name, span, context, env),
+        resolve_qualified_call(
+          alias,
+          function_name,
+          span,
+          receiver_span,
+          context,
+          env,
+        ),
         extract_from_arguments(arguments, context, env),
         span,
         list.append(pipe_args, classify_arguments(arguments, context, env, 1)),

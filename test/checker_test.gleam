@@ -1,4 +1,5 @@
 import generators
+import girard
 import glance
 import gleam/dict
 import gleam/list
@@ -309,6 +310,131 @@ pub fn field_call_typed_with_registry_test() {
     EffectAnnotation(Check, "view", [], Specific(set.from_list(["Dom"])))
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
+}
+
+// Stage A: type-directed receiver resolution via girard.
+//
+// Same as `check_source_with_type_fields`, but threads girard's real inferred
+// types so the receiver's nominal type is known even when it isn't a directly
+// annotated parameter.
+fn check_source_with_girard(
+  source: String,
+  annotations: List(EffectAnnotation),
+  type_fields: List(types.TypeFieldAnnotation),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let module_types = case
+    girard.annotate_module(module, girard.default_options())
+  {
+    Ok(annotated) ->
+      list.fold(annotated.expressions, dict.new(), fn(acc, annotation) {
+        dict.insert(
+          acc,
+          #(annotation.span.start, annotation.span.end),
+          annotation.type_,
+        )
+      })
+    Error(_) -> dict.new()
+  }
+  let kb = effects.with_type_fields(knowledge_base(), type_fields)
+  let #(violations, _warnings) =
+    checker.check(module, annotations, kb, signatures.empty(), module_types)
+  violations
+}
+
+// The canonical 3b gap: the receiver is bound from a function call, so graded's
+// syntax-level path sees it as opaque. girard types it as `Validator`, so the
+// `type Validator.to_error` annotation resolves the field call.
+const opaque_receiver_source = "
+import gleam/io
+
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+
+fn make() -> Validator {
+  Validator(to_error: io.println)
+}
+
+pub fn run(msg: String) -> Nil {
+  let v = make()
+  v.to_error(msg)
+}
+"
+
+fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
+  [
+    types.TypeFieldAnnotation(
+      module: None,
+      type_name: "Validator",
+      field: "to_error",
+      effects: Specific(set.from_list(["Stdout"])),
+    ),
+  ]
+}
+
+pub fn field_call_opaque_receiver_resolves_via_girard_test() {
+  // With girard's type + the type annotation, the [Stdout] budget passes.
+  let annotation =
+    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+  check_source_with_girard(
+    opaque_receiver_source,
+    [annotation],
+    validator_to_error_stdout(),
+  )
+  |> should.equal([])
+}
+
+pub fn field_call_opaque_receiver_violates_pure_test() {
+  // Dual: against a [] budget the recovered [Stdout] surfaces as a violation,
+  // proving the field call actually resolved (vs. silently inferring []).
+  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let violations =
+    check_source_with_girard(
+      opaque_receiver_source,
+      [annotation],
+      validator_to_error_stdout(),
+    )
+  let assert [violation] = violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn field_call_aliased_receiver_resolves_via_girard_test() {
+  // Receiver reached through an alias chain (`let w = v`) — both bindings are
+  // opaque to the syntax-level path, but girard types `w` as Validator.
+  let source =
+    "
+import gleam/io
+
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+
+fn make() -> Validator {
+  Validator(to_error: io.println)
+}
+
+pub fn run(msg: String) -> Nil {
+  let v = make()
+  let w = v
+  w.to_error(msg)
+}
+"
+  let annotation =
+    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+  check_source_with_girard(source, [annotation], validator_to_error_stdout())
+  |> should.equal([])
+}
+
+pub fn field_call_girard_without_annotation_still_unknown_test() {
+  // girard types the receiver, but no `type Validator.to_error` annotation
+  // exists, so the effect is still [Unknown] — documents the A/C boundary:
+  // Stage A needs the annotation for the effect; Stage C removes that need.
+  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let violations =
+    check_source_with_girard(opaque_receiver_source, [annotation], [])
+  let assert [violation] = violations
+  violation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 // Field effects exceed declared budget → violation

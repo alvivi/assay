@@ -323,7 +323,11 @@ fn build_type_index(
           module_result.annotated.expressions,
           dict.new(),
           fn(acc, annotation) {
-            dict.insert(acc, annotation.span.start, annotation.type_)
+            dict.insert(
+              acc,
+              #(annotation.span.start, annotation.span.end),
+              annotation.type_,
+            )
           },
         )
       #(module_path, span_types)
@@ -389,7 +393,7 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(Int, girard_types.Type),
+  module_types: Dict(#(Int, Int), girard_types.Type),
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
   let inferred =
     checker.infer(module, knowledge_base, [], registry, module_types)
@@ -514,7 +518,7 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
-  module_types: Dict(Int, girard_types.Type),
+  module_types: Dict(#(Int, Int), girard_types.Type),
 ) -> CheckResult {
   let #(violations, warnings) =
     checker.check(module, module_checks, knowledge_base, registry, module_types)

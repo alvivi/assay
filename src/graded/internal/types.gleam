@@ -197,8 +197,10 @@ pub type LocalCall {
 }
 
 /// A field access call: object.label(args) where object is a local variable.
+/// `span` is the whole call's span (for diagnostics); `receiver_span` is the
+/// receiver variable's own span, used to look up its inferred type.
 pub type FieldCall {
-  FieldCall(object: String, label: String, span: Span)
+  FieldCall(object: String, label: String, span: Span, receiver_span: Span)
 }
 
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
