@@ -31,8 +31,8 @@ pages = [
 [dependencies]
 gleam_stdlib = ">= 0.44.0 and < 2.0.0"
 glance = ">= 6.0.0 and < 8.0.0"
-# Spike: girard type annotator as a local path dependency (girard-spike branch).
-girard = { path = "../girard" }
+# Spike: girard type annotator (published on hex).
+girard = ">= 1.0.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.0.0 and < 2.0.0"
 filepath = ">= 1.1.2 and < 2.0.0"
