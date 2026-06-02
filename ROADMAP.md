@@ -3,20 +3,24 @@
 The big picture for closing graded's remaining analysis gaps. Ordered by
 sequencing, not by size.
 
-Current state: **0.6.0** shipped same-function value flow — function-ref
-aliases, locally-constructed record field resolution, and positional
-constructor arg mapping. **0.5.0** shipped first-order effect polymorphism —
-effect variables at function boundaries, call-site substitution for
-higher-order functions, dependency parameter positions via glance.
+Current state: **milestone 3b is closed** — graded integrates
+[girard](https://hexdocs.pm/girard), a Hindley-Milner type annotator, to resolve
+field calls through real receiver types and to infer field effects from
+construction sites (the hand-written `type` line is no longer required in the
+common case). This subsumes 0.6.0's same-function value-flow hack and removes the
+"expression-level type info isn't available" gap. **0.7.0** shipped nested
+higher-order effect unification. **0.6.0** shipped same-function value flow.
+**0.5.0** shipped first-order effect polymorphism.
 
 The gaps that remain are documented in [README.md](./README.md#limitations):
 
-- Nested (second-order) polymorphism — callbacks that take callbacks —
-  isn't tracked.
-- Expression-level type info isn't available, which forces label/position
-  heuristics for argument matching.
-
-The milestones below address these progressively.
+- Inferred field effects fall back to `[Unknown]` for values graded can't
+  statically resolve (local function values, cross-module unlabelled positional
+  constructor args); type-name keying is bare, so same-named types across
+  modules are conflated.
+- The label/position argument-matching heuristics remain (deliberately not
+  retired — they drive polymorphic call-site substitution, a subsystem girard's
+  expression types don't cleanly replace).
 
 ---
 
@@ -129,6 +133,6 @@ annotator itself is the long pole.
 | Milestone | What it closes | Blocker | Status |
 |---|---|---|---|
 | 0.6.0 | Field calls on same-function records | — | ✅ shipped |
-| 0.7.0 | Nested higher-order polymorphism | — | next |
-| 3b | Full propagation through record types | Expression-level type info | blocked |
+| 0.7.0 | Nested higher-order polymorphism | — | ✅ shipped |
+| 3b | Field calls through record types (via girard) | ~~Expression-level type info~~ (unblocked by girard) | ✅ shipped |
 | Privacy | New checker on the same foundation | Dedicated design | future |
