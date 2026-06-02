@@ -177,6 +177,13 @@ fn ctor_in_statements(
   })
 }
 
+fn ctor_in_each(
+  expressions: List(Expression),
+  context: ImportContext,
+) -> List(#(String, Dict(String, ArgumentValue))) {
+  list.flat_map(expressions, ctor_in_expression(_, context))
+}
+
 fn ctor_in_optional(
   expression: Option(Expression),
   context: ImportContext,
@@ -239,11 +246,10 @@ fn ctor_in_expression(
       )
     glance.Block(statements:, ..) -> ctor_in_statements(statements, context)
     glance.Fn(body:, ..) -> ctor_in_statements(body, context)
-    glance.Tuple(elements:, ..) ->
-      list.flat_map(elements, ctor_in_expression(_, context))
+    glance.Tuple(elements:, ..) -> ctor_in_each(elements, context)
     glance.List(elements:, rest:, ..) ->
       list.append(
-        list.flat_map(elements, ctor_in_expression(_, context)),
+        ctor_in_each(elements, context),
         ctor_in_optional(rest, context),
       )
     glance.BinaryOperator(left:, right:, ..) ->
@@ -253,7 +259,7 @@ fn ctor_in_expression(
       )
     glance.Case(subjects:, clauses:, ..) ->
       list.append(
-        list.flat_map(subjects, ctor_in_expression(_, context)),
+        ctor_in_each(subjects, context),
         list.flat_map(clauses, fn(clause) {
           ctor_in_expression(clause.body, context)
         }),

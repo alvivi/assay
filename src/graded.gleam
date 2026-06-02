@@ -432,9 +432,13 @@ fn fn_typed_params_from_schemes(
   module_result: girard.ModuleResult,
   module: glance.Module,
 ) -> Dict(String, Set(String)) {
+  let function_map =
+    list.fold(module.functions, dict.new(), fn(acc, definition) {
+      dict.insert(acc, definition.definition.name, definition.definition)
+    })
   list.fold(module_result.annotated.functions, dict.new(), fn(acc, entry) {
     let #(name, scheme) = entry
-    case scheme.type_, find_function(module, name) {
+    case scheme.type_, dict.get(function_map, name) {
       girard_types.Fn(argument_types, _return), Ok(function) ->
         dict.insert(acc, name, fn_typed_names(function, argument_types))
       _, _ -> acc
@@ -457,18 +461,6 @@ fn fn_typed_names(
     }
   })
   |> set.from_list()
-}
-
-fn find_function(
-  module: glance.Module,
-  name: String,
-) -> Result(glance.Function, Nil) {
-  list.find_map(module.functions, fn(definition) {
-    case definition.definition.name == name {
-      True -> Ok(definition.definition)
-      False -> Error(Nil)
-    }
-  })
 }
 
 /// A girard `Resolver` that resolves graded's own project modules from `index`
