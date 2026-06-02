@@ -467,3 +467,56 @@ pub fn target(xs) {
   second_arg.value
   |> should.equal(FunctionRef(QualifiedName("gleam/io", "println")))
 }
+
+// Stage C: constructor-field harvesting
+
+pub fn constructor_type_map_distinguishes_constructor_from_type_test() {
+  // A type whose constructor name differs from the type name. The index must
+  // key by the *type* (Shape), since that is what girard reports for a value.
+  let src =
+    "pub type Shape {
+  Circle(radius: Int)
+  Square(side: Int)
+}"
+  let assert Ok(module) = glance.module(src)
+  let map = extract.build_constructor_type_map(module)
+  dict.get(map, "Circle") |> should.equal(Ok("Shape"))
+  dict.get(map, "Square") |> should.equal(Ok("Shape"))
+}
+
+pub fn collect_constructor_bindings_finds_field_value_test() {
+  let src =
+    "import gleam/io
+pub type Logger {
+  Logger(emit: fn(String) -> Nil)
+}
+pub fn make() {
+  Logger(emit: io.println)
+}"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+  let bindings = extract.collect_constructor_bindings(module, ctx)
+  let assert Ok(#(_constructor, fields)) =
+    list.find(bindings, fn(b) { b.0 == "Logger" })
+  dict.get(fields, "emit")
+  |> should.equal(Ok(FunctionRef(QualifiedName("gleam/io", "println"))))
+}
+
+pub fn collect_constructor_bindings_finds_nested_construction_test() {
+  // Construction nested inside a case clause body must still be found.
+  let src =
+    "import gleam/io
+pub type Logger {
+  Logger(emit: fn(String) -> Nil)
+}
+pub fn pick(flag) {
+  case flag {
+    True -> Logger(emit: io.println)
+    False -> Logger(emit: io.print)
+  }
+}"
+  let assert Ok(module) = glance.module(src)
+  let ctx = extract.build_import_context(module)
+  let bindings = extract.collect_constructor_bindings(module, ctx)
+  list.length(bindings) |> should.equal(2)
+}

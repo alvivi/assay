@@ -26,17 +26,18 @@ Tests use **gleeunit** with **qcheck** property generators in `test/generators.g
 
 ## Architecture
 
-Seven modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
+Eight modules, no circular dependencies. Only `src/graded.gleam` is the public top-level entry point; the rest live under `src/graded/internal/`:
 
 | File | Responsibility |
 |---|---|
-| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache) and `run` (check the spec against source) |
+| `src/graded.gleam` | CLI entry point + public API: orchestrate `run_infer` (write spec + cache) and `run` (check the spec against source); run girard type inference + build the constructor-field index |
 | `src/graded/internal/types.gleam` | Shared types: QualifiedName, EffectAnnotation, ParamBound, FieldCall, TypeFieldAnnotation, Violation |
 | `src/graded/internal/config.gleam` | Read `[tools.graded]` from `gleam.toml`, resolve `spec_file` and `cache_dir` paths |
 | `src/graded/internal/annotation.gleam` | Parse/format `.graded` files; split qualified names |
 | `src/graded/internal/effects.gleam` | Knowledge base: function/type field -> effect set lookup; load spec files from deps |
-| `src/graded/internal/extract.gleam` | Walk glance AST, resolve imports, extract calls (resolved, local, field) |
-| `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls |
+| `src/graded/internal/extract.gleam` | Walk glance AST, resolve imports, extract calls (resolved, local, field) + collect constructor bindings |
+| `src/graded/internal/checker.gleam` | Collect effects, check subset inclusion, resolve param bounds and field calls (type-directed via girard) |
+| `src/graded/internal/typeinfo.gleam` | Hold girard's per-expression inferred types, keyed by `#(start, end)` span, for receiver-type lookup |
 | `src/graded/internal/topo.gleam` | Kahn's-algorithm topological sort over a string-keyed dependency graph |
 
 ## .graded Annotation Syntax
@@ -83,7 +84,7 @@ effects parse_query : []
 - **Agents first.** Annotations are designed to be machine-written and machine-read.
 - **Incremental adoption.** Modules without entries in the spec file are silently skipped at check time; the rest is ignored.
 - **Sound foundations.** Based on graded modal type theory (see THEORY.md).
-- **No type inference required.** Uses glance for syntax-level AST; resolves types via explicit parameter annotations.
+- **Type inference as an enhancement layer.** graded parses with glance (syntax-level) and additionally runs [girard](https://hexdocs.pm/girard) — a Hindley-Milner type annotator for Gleam — over the whole package to learn the inferred type of every expression. Types resolve field calls on any receiver (not just directly-annotated parameters) and let field effects be derived from construction sites. girard is best-effort and per-function: a function it can't type contributes no types, so graded silently falls back to the syntax-level path for it — types can only ever sharpen an `[Unknown]`, never change an already-resolved result.
 - **`priv/` is for runtime data, not build-time tool state.** graded's own `priv/catalog/` is read at graded's runtime when invoked, which is the textbook use of priv. graded does NOT write to user projects' or dependencies' priv directories.
 
 ## Effect Resolution
@@ -98,7 +99,7 @@ Three call categories in the extractor:
 
 1. **Resolved calls** — qualified module.function calls, looked up in knowledge base
 2. **Local calls** — unresolved names, checked against param bounds, then local function definitions, then flagged Unknown
-3. **Field calls** — `object.field(args)` on local variables, resolved via parameter type annotations + type field registry
+3. **Field calls** — `object.field(args)` on local variables, resolved by looking up the receiver's nominal type (girard's inferred type first, then a syntactic parameter annotation) in the type field registry. The registry is populated from hand-written `type` lines and, when absent, from effects inferred at constructor call sites (`Validator(to_error: io.println)` ⟹ `Validator.to_error : [Stdout]`).
 
 ## Theoretical Foundations
 

@@ -1,3 +1,4 @@
+import girard/types as girard_types
 import glance.{type Definition, type Function, type Module}
 import gleam/bool
 import gleam/dict
@@ -9,6 +10,7 @@ import gleam/string
 import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract.{type ImportContext}
 import graded/internal/signatures.{type SignatureRegistry}
+import graded/internal/typeinfo
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, type LocalCall, type ParamBound,
   type ResolvedCall, type Violation, type Warning, EffectAnnotation, Effects,
@@ -21,6 +23,7 @@ pub fn check(
   annotations: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -33,6 +36,7 @@ pub fn check(
         context,
         knowledge_base,
         registry,
+        module_types,
       )
     })
   let violations = list.flat_map(results, fn(r) { r.0 })
@@ -47,6 +51,8 @@ pub fn infer(
   knowledge_base: KnowledgeBase,
   existing_checks: List(EffectAnnotation),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: dict.Dict(String, Set(String)),
 ) -> List(EffectAnnotation) {
   let context = extract.build_import_context(module)
   let function_map = build_function_map(module)
@@ -74,8 +80,15 @@ pub fn infer(
     // and are excluded from auto-detection.
     let declared_bound_names =
       param_bounds |> list.map(fn(b) { b.name }) |> set.from_list()
+    // Function-typed parameters: girard's inferred signature (covers params
+    // with no `fn(...)` annotation) unioned with the syntactic detection (the
+    // fallback when girard skipped this function).
     let fn_typed_params =
       signatures.fn_typed_params_from_function(definition.definition)
+      |> set.union(typeinfo.fn_typed_params(
+        girard_fn_typed,
+        definition.definition.name,
+      ))
       |> set.filter(fn(name) { !set.contains(declared_bound_names, name) })
     let effective_bounds =
       list.append(param_bounds, synthetic_fn_typed_bounds(fn_typed_params))
@@ -88,6 +101,7 @@ pub fn infer(
         set.new(),
         effective_bounds,
         registry,
+        module_types,
       )
     let effect_set =
       list.fold(all_effects, types.empty(), fn(combined, pair) {
@@ -156,6 +170,7 @@ fn check_annotation(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> #(List(Violation), List(Warning)) {
   case dict.get(function_map, annotation.function) {
     // Silently skip: the annotation may be stale or apply to a different
@@ -171,6 +186,7 @@ fn check_annotation(
           set.new(),
           annotation.params,
           registry,
+          module_types,
         )
       // A call is a violation when its effect set is not a subset of the
       // declared budget — i.e. it performs effects the caller didn't allow.
@@ -243,6 +259,7 @@ fn collect_effects(
   visited: Set(String),
   param_bounds: List(ParamBound),
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(#(types.ResolvedCall, EffectSet)) {
   let result = extract.extract_calls(function.body, context)
 
@@ -292,6 +309,7 @@ fn collect_effects(
             context,
             knowledge_base,
             registry,
+            module_types,
           )
           |> substitute_local_call_effects(
             local_call,
@@ -315,7 +333,16 @@ fn collect_effects(
           ),
           span: field_call.span,
         )
-      let effect_set = resolve_field_call(field_call, function, knowledge_base)
+      let effect_set =
+        resolve_field_call(
+          field_call,
+          function,
+          knowledge_base,
+          module_types,
+          result.call_args,
+          param_bounds,
+          registry,
+        )
       #(synthetic_call, effect_set)
     })
 
@@ -616,6 +643,7 @@ fn resolve_unknown_local(
   context: ImportContext,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
 ) -> List(#(ResolvedCall, EffectSet)) {
   case set.contains(visited, local_call.function) {
     // Cycle detected — already analysing this function up the call stack.
@@ -653,6 +681,7 @@ fn resolve_unknown_local(
             new_visited,
             nested_bounds,
             registry,
+            module_types,
           )
         }
       }
@@ -663,26 +692,101 @@ fn resolve_field_call(
   field_call: types.FieldCall,
   function: Function,
   knowledge_base: KnowledgeBase,
+  module_types: dict.Dict(#(Int, Int), girard_types.Type),
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
 ) -> EffectSet {
-  let unknown = types.from_labels(["Unknown"])
-  let param =
-    list.find(function.parameters, fn(param) {
-      case param.name {
-        glance.Named(name) -> name == field_call.object
-        glance.Discarded(_) -> False
-      }
-    })
-  case param {
-    Ok(glance.FunctionParameter(
-      type_: Some(glance.NamedType(name: type_name, ..)),
-      ..,
-    )) ->
+  // Resolve the receiver's nominal type: girard's inferred type for the receiver
+  // expression first (any receiver — let-bound from a call, pipe, return), then
+  // the receiver's syntactic parameter annotation as the fallback.
+  let receiver_type =
+    typeinfo.receiver_type(
+      module_types,
+      field_call.receiver_span.start,
+      field_call.receiver_span.end,
+    )
+    |> option.lazy_or(fn() { syntactic_param_type(function, field_call.object) })
+  case receiver_type {
+    None -> types.from_labels(["Unknown"])
+    Some(type_name) ->
       case
         effects.lookup_type_field(knowledge_base, type_name, field_call.label)
       {
-        effects.Known(effect_set) -> effect_set
-        effects.Unknown -> unknown
+        Error(Nil) -> types.from_labels(["Unknown"])
+        Ok(field_effect) ->
+          resolve_field_effect(
+            field_effect,
+            field_call,
+            call_args,
+            knowledge_base,
+            caller_param_bounds,
+            registry,
+          )
       }
-    _ -> unknown
+  }
+}
+
+/// Resolve a type field's effect. When it carries effect variables and a
+/// polymorphic source (a function wired into the field), bind those variables to
+/// the field call's arguments — the same call-site substitution resolved calls
+/// use. Any variable left unbound collapses to `[Unknown]`.
+fn resolve_field_effect(
+  field_effect: types.TypeFieldEffect,
+  field_call: types.FieldCall,
+  call_args: dict.Dict(Int, List(types.CallArgument)),
+  knowledge_base: KnowledgeBase,
+  caller_param_bounds: List(ParamBound),
+  registry: SignatureRegistry,
+) -> EffectSet {
+  case types.has_variables(field_effect.effects), field_effect.source {
+    False, _ -> field_effect.effects
+    True, None -> concretize(field_effect.effects)
+    True, Some(source) -> {
+      let args = dict.get(call_args, field_call.span.start) |> result.unwrap([])
+      let bindings =
+        bind_variables(
+          source,
+          field_effect.bounds,
+          args,
+          knowledge_base,
+          caller_param_bounds,
+          registry,
+        )
+      concretize(types.substitute(field_effect.effects, bindings))
+    }
+  }
+}
+
+/// Replace any effect variables left after substitution with `Unknown`, so an
+/// unbound field effect never surfaces with free variables.
+fn concretize(effect_set: EffectSet) -> EffectSet {
+  case effect_set {
+    Polymorphic(labels, _variables) ->
+      types.Specific(set.insert(labels, "Unknown"))
+    _ -> effect_set
+  }
+}
+
+/// The nominal type name declared on the function parameter named `object`, if
+/// it carries a `NamedType` annotation. The syntax-level fallback for receivers
+/// girard could not type.
+fn syntactic_param_type(
+  function: Function,
+  object: String,
+) -> option.Option(String) {
+  case
+    list.find(function.parameters, fn(param) {
+      case param.name {
+        glance.Named(name) -> name == object
+        glance.Discarded(_) -> False
+      }
+    })
+  {
+    Ok(glance.FunctionParameter(
+      type_: Some(glance.NamedType(name: type_name, ..)),
+      ..,
+    )) -> Some(type_name)
+    _ -> None
   }
 }

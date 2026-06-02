@@ -21,12 +21,15 @@
 
 import argv
 import filepath
+import girard
+import girard/types as girard_types
 import glance
 import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set.{type Set}
 import gleam/string
@@ -38,6 +41,7 @@ import graded/internal/effects.{type KnowledgeBase}
 import graded/internal/extract
 import graded/internal/signatures.{type SignatureRegistry}
 import graded/internal/topo
+import graded/internal/typeinfo
 import graded/internal/types.{
   type CheckResult, type EffectAnnotation, type GradedFile, type QualifiedName,
   type Violation, type Warning, AnnotationLine, CheckResult, EffectAnnotation,
@@ -120,14 +124,6 @@ pub fn main() -> Nil {
 pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let cfg = read_config(directory)
   let spec = read_spec(cfg.spec_file)
-
-  let knowledge_base =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
-    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
-
   let checks_by_module = checks_grouped_by_module(spec)
 
   use gleam_files <- result.try(find_gleam_files(directory))
@@ -135,6 +131,21 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
   let index = build_module_index(parsed, directory)
   let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index)
+
+  // Hand-written `type` lines (last) win over the inferred construction index.
+  let kb_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
+    |> effects.with_inferred(effects.load_spec_effects_from_file(spec))
+    |> effects.with_externals(annotation.extract_externals(spec))
+  let knowledge_base =
+    kb_base
+    |> effects.with_inferred_type_fields(build_constructor_field_index(
+      index,
+      kb_base,
+    ))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   let results =
     list.map(parsed, fn(entry) {
@@ -150,6 +161,7 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
         module_checks,
         knowledge_base,
         registry,
+        typeinfo.for_module(type_info, module_path),
       )
     })
 
@@ -173,15 +185,30 @@ pub fn run(directory: String) -> Result(List(CheckResult), GradedError) {
 pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   let cfg = read_config(directory)
   let spec = read_spec(cfg.spec_file)
-  let base_kb =
-    effects.load_knowledge_base("build/packages")
-    |> enrich_with_path_deps()
-    |> effects.with_externals(annotation.extract_externals(spec))
-    |> effects.with_type_fields(annotation.extract_type_fields(spec))
 
   use gleam_files <- result.try(find_gleam_files(directory))
   use parsed <- result.try(parse_all_files(gleam_files))
   let index = build_module_index(parsed, directory)
+
+  let kb_base =
+    effects.load_knowledge_base("build/packages")
+    |> enrich_with_path_deps()
+    |> effects.with_externals(annotation.extract_externals(spec))
+  // Resolve constructor-field values against the same view `run` uses — catalog
+  // + externals + the spec's *existing* inferred effects — so `infer` and
+  // `check` agree on a field wired to a qualified project function, converging
+  // across runs. The inferred effects are NOT seeded into `base_kb` below: the
+  // topo loop recomputes them fresh, threading each module's result forward.
+  let construction_kb =
+    effects.with_inferred(kb_base, effects.load_spec_effects_from_file(spec))
+  let base_kb =
+    kb_base
+    |> effects.with_inferred_type_fields(build_constructor_field_index(
+      index,
+      construction_kb,
+    ))
+    |> effects.with_type_fields(annotation.extract_type_fields(spec))
+
   let graph = build_dependency_graph(index)
   use sorted <- result.try(
     topo.sort(graph)
@@ -196,6 +223,7 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
   // polymorphic calls.
   let dep_registry = signatures.load_from_packages_dir("build/packages")
   let registry = signatures.merge(dep_registry, build_project_registry(index))
+  let type_info = build_type_index(index)
 
   use #(_kb, public_annotations) <- result.try(
     list.try_fold(sorted, #(base_kb, []), fn(state, module_path) {
@@ -209,6 +237,8 @@ pub fn run_infer(directory: String) -> Result(Nil, GradedError) {
             cfg.cache_dir,
             kb,
             registry,
+            typeinfo.for_module(type_info, module_path),
+            typeinfo.fn_typed_for_module(type_info, module_path),
           ))
           // Prepend new_public so each iteration is O(|new_public|) instead
           // of O(|acc|); final order doesn't matter, merge_inferred keys by
@@ -290,6 +320,217 @@ fn build_project_registry(
   })
 }
 
+/// Stage C: derive `type Foo.field : [...]` annotations from constructor call
+/// sites across the package. `Validator(to_error: io.println)` anywhere makes
+/// `Validator.to_error` carry io.println's effects (unioned across all sites),
+/// so a field call resolves without a hand-written annotation. Resolved via
+/// girard's receiver typing at the use site; hand-written `type` lines still
+/// win, since they are merged over these.
+fn build_constructor_field_index(
+  index: Dict(String, #(String, glance.Module)),
+  knowledge_base: KnowledgeBase,
+) -> List(#(#(String, String), types.TypeFieldEffect)) {
+  // Global constructor-name -> type-name map across the whole package, so
+  // cross-module constructors key by the type girard reports for a receiver.
+  let constructor_to_type =
+    dict.fold(index, dict.new(), fn(acc, _path, entry) {
+      let #(_gleam_path, module) = entry
+      dict.merge(acc, extract.build_constructor_type_map(module))
+    })
+
+  // Accumulate (type_name, field) -> effect, unioning across every site.
+  dict.fold(index, dict.new(), fn(acc, _path, entry) {
+    let #(_gleam_path, module) = entry
+    let context = extract.build_import_context(module)
+    extract.collect_constructor_bindings(module, context)
+    |> list.fold(acc, fn(inner, binding) {
+      accumulate_constructor_binding(
+        inner,
+        binding,
+        constructor_to_type,
+        knowledge_base,
+      )
+    })
+  })
+  |> dict.to_list()
+}
+
+/// Fold one constructor call's field bindings into the (type, field) -> effect
+/// accumulator, unioning with any effect already recorded for that field.
+fn accumulate_constructor_binding(
+  acc: Dict(#(String, String), types.TypeFieldEffect),
+  binding: #(String, Dict(String, types.ArgumentValue)),
+  constructor_to_type: Dict(String, String),
+  knowledge_base: KnowledgeBase,
+) -> Dict(#(String, String), types.TypeFieldEffect) {
+  let #(constructor, fields) = binding
+  case dict.get(constructor_to_type, constructor) {
+    Error(Nil) -> acc
+    Ok(type_name) ->
+      dict.fold(fields, acc, fn(inner, label, value) {
+        let field_effect = field_effect_of(knowledge_base, value)
+        let key = #(type_name, label)
+        let merged = case dict.get(inner, key) {
+          Ok(existing) -> merge_field_effect(existing, field_effect)
+          Error(Nil) -> field_effect
+        }
+        dict.insert(inner, key, merged)
+      })
+  }
+}
+
+/// The effect a constructor field's value contributes. For a function reference
+/// with effect variables, also capture the wired function's param bounds and
+/// identity, so a field call can bind those variables to its arguments.
+fn field_effect_of(
+  knowledge_base: KnowledgeBase,
+  value: types.ArgumentValue,
+) -> types.TypeFieldEffect {
+  let field_effects = effects.argument_value_effects(knowledge_base, value)
+  let concrete = types.TypeFieldEffect(field_effects, [], None)
+  case value {
+    types.FunctionRef(name:) ->
+      case types.has_variables(field_effects) {
+        True ->
+          types.TypeFieldEffect(
+            field_effects,
+            effects.lookup_param_bounds(knowledge_base, name),
+            Some(name),
+          )
+        False -> concrete
+      }
+    _ -> concrete
+  }
+}
+
+/// Union two field-effect contributions for the same field across sites. Keeps
+/// the first polymorphic source — conflicting polymorphism across sites is rare,
+/// and unbound variables collapse to `[Unknown]` at the call site.
+fn merge_field_effect(
+  existing: types.TypeFieldEffect,
+  new: types.TypeFieldEffect,
+) -> types.TypeFieldEffect {
+  let #(bounds, source) = case existing.source {
+    Some(_) -> #(existing.bounds, existing.source)
+    None -> #(new.bounds, new.source)
+  }
+  types.TypeFieldEffect(
+    types.union(existing.effects, new.effects),
+    bounds,
+    source,
+  )
+}
+
+/// Run girard's whole-package type inference once over every project module
+/// and fold the result into a `TypeInfo` (module path -> span start -> type).
+/// girard is best-effort: a function it can't type contributes no expressions,
+/// so the checker silently falls back to syntax-level resolution for it.
+fn build_type_index(
+  index: Dict(String, #(String, glance.Module)),
+) -> typeinfo.TypeInfo {
+  let options =
+    girard.default_options()
+    |> girard.with_resolver(build_girard_resolver(index))
+  let entries =
+    dict.to_list(index)
+    |> list.map(fn(pair) {
+      let #(module_path, #(_gleam_path, module)) = pair
+      #(module_path, module)
+    })
+  let results = girard.annotate_package(entries, options) |> dict.to_list()
+  let span_types =
+    list.map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      let types =
+        list.fold(
+          module_result.annotated.expressions,
+          dict.new(),
+          fn(acc, annotation) {
+            dict.insert(
+              acc,
+              #(annotation.span.start, annotation.span.end),
+              annotation.type_,
+            )
+          },
+        )
+      #(module_path, types)
+    })
+  let fn_typed =
+    list.filter_map(results, fn(pair) {
+      let #(module_path, module_result) = pair
+      case dict.get(index, module_path) {
+        Ok(#(_gleam_path, module)) ->
+          Ok(#(module_path, fn_typed_params_from_schemes(module_result, module)))
+        Error(Nil) -> Error(Nil)
+      }
+    })
+  typeinfo.from_modules(span_types, fn_typed)
+}
+
+/// From girard's inferred top-level signatures, the set of function-typed
+/// parameter names for each function — including parameters with no syntactic
+/// `fn(...)` annotation, which the glance-only detection misses. A parameter is
+/// function-typed when its inferred type (positional in the function's `Fn`
+/// type) is itself a `Fn`.
+fn fn_typed_params_from_schemes(
+  module_result: girard.ModuleResult,
+  module: glance.Module,
+) -> Dict(String, Set(String)) {
+  let function_map =
+    list.fold(module.functions, dict.new(), fn(acc, definition) {
+      dict.insert(acc, definition.definition.name, definition.definition)
+    })
+  list.fold(module_result.annotated.functions, dict.new(), fn(acc, entry) {
+    let #(name, scheme) = entry
+    case scheme.type_, dict.get(function_map, name) {
+      girard_types.Fn(argument_types, _return), Ok(function) ->
+        dict.insert(acc, name, fn_typed_names(function, argument_types))
+      _, _ -> acc
+    }
+  })
+}
+
+/// The names of `function`'s parameters whose inferred type (positional in
+/// `argument_types`) is itself a `Fn`.
+fn fn_typed_names(
+  function: glance.Function,
+  argument_types: List(girard_types.Type),
+) -> Set(String) {
+  // Positional mapping is only sound when girard's `Fn` arity matches glance's
+  // parameter count. `list.zip` would silently truncate a mismatch, so skip the
+  // function entirely rather than map parameters to the wrong types.
+  use <- bool.guard(
+    when: list.length(function.parameters) != list.length(argument_types),
+    return: set.new(),
+  )
+  list.zip(function.parameters, argument_types)
+  |> list.filter_map(fn(pair) {
+    let #(parameter, argument_type) = pair
+    case argument_type, parameter.name {
+      girard_types.Fn(_, _), glance.Named(parameter_name) -> Ok(parameter_name)
+      _, _ -> Error(Nil)
+    }
+  })
+  |> set.from_list()
+}
+
+/// A girard `Resolver` that resolves graded's own project modules from `index`
+/// first (so non-`src` layouts like `test/fixtures` work), then falls through
+/// to girard's stock disk resolver for dependencies and stdlib under
+/// `build/packages`.
+fn build_girard_resolver(
+  index: Dict(String, #(String, glance.Module)),
+) -> fn(String) -> Result(String, Nil) {
+  let disk = girard.disk_resolver()
+  fn(module_path) {
+    case dict.get(index, module_path) {
+      Ok(#(gleam_path, _module)) ->
+        simplifile.read(gleam_path) |> result.replace_error(Nil)
+      Error(Nil) -> disk(module_path)
+    }
+  }
+}
+
 /// Build an index from dotted module name (`app/router`) to the parsed file.
 /// This is the set of *project* modules — every module name in this dict is
 /// a candidate dependency-graph node.
@@ -331,8 +572,18 @@ fn infer_one_module(
   cache_dir: String,
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: Dict(#(Int, Int), girard_types.Type),
+  girard_fn_typed: Dict(String, Set(String)),
 ) -> Result(#(KnowledgeBase, List(EffectAnnotation)), GradedError) {
-  let inferred = checker.infer(module, knowledge_base, [], registry)
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base,
+      [],
+      registry,
+      module_types,
+      girard_fn_typed,
+    )
 
   let cache_path = filepath.join(cache_dir, module_path <> ".graded")
 
@@ -454,9 +705,10 @@ fn check_one_file(
   module_checks: List(EffectAnnotation),
   knowledge_base: KnowledgeBase,
   registry: SignatureRegistry,
+  module_types: Dict(#(Int, Int), girard_types.Type),
 ) -> CheckResult {
   let #(violations, warnings) =
-    checker.check(module, module_checks, knowledge_base, registry)
+    checker.check(module, module_checks, knowledge_base, registry, module_types)
   CheckResult(file: gleam_path, violations:, warnings:)
 }
 
@@ -619,7 +871,16 @@ fn infer_path_dep_module(
   case dict.get(index, module_path) {
     Error(_) -> #(acc, kb)
     Ok(#(module, checks)) -> {
-      let annotations = checker.infer(module, kb, checks, signatures.empty())
+      // Path-dep inference skips girard in v1 (cost/benefit): pass no types.
+      let annotations =
+        checker.infer(
+          module,
+          kb,
+          checks,
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let module_dict =
         list.fold(annotations, dict.new(), fn(d, annotation) {
           dict.insert(

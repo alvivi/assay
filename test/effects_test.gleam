@@ -8,7 +8,8 @@ import gleam/string
 import gleeunit/should
 import graded/internal/effects
 import graded/internal/types.{
-  type EffectSet, Polymorphic, QualifiedName, Specific, Wildcard,
+  type EffectSet, ConstructorRef, FunctionRef, OtherExpression, Polymorphic,
+  QualifiedName, Specific, Wildcard,
 }
 import qcheck
 import simplifile
@@ -465,4 +466,37 @@ pub fn pick_best_version_eligible_test() {
     }
     Error(Nil) -> Nil
   }
+}
+
+// argument_value_effects (Stage C construction-index value resolution)
+
+pub fn argument_value_effects_resolves_function_ref_test() {
+  // A FunctionRef resolves against the KB, including inferred project effects.
+  // This is what lets `run` and `run_infer` agree on a constructor field wired
+  // to a qualified project function once the spec carries its effects.
+  let kb =
+    effects.with_inferred(
+      knowledge_base(),
+      dict.from_list([
+        #(
+          QualifiedName("myapp/log", "emit"),
+          Specific(set.from_list(["Stdout"])),
+        ),
+      ]),
+    )
+  effects.argument_value_effects(
+    kb,
+    FunctionRef(QualifiedName("myapp/log", "emit")),
+  )
+  |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn argument_value_effects_constructor_is_pure_test() {
+  effects.argument_value_effects(knowledge_base(), ConstructorRef)
+  |> should.equal(Specific(set.new()))
+}
+
+pub fn argument_value_effects_other_is_unknown_test() {
+  effects.argument_value_effects(knowledge_base(), OtherExpression)
+  |> should.equal(Specific(set.from_list(["Unknown"])))
 }

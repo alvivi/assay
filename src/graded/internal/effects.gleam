@@ -1,6 +1,7 @@
 import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/order
 import gleam/result
 import gleam/set.{type Set}
@@ -8,10 +9,11 @@ import gleam/string
 import graded/internal/annotation
 import graded/internal/config
 import graded/internal/types.{
-  type EffectAnnotation, type EffectSet, type ExternalAnnotation,
-  type ParamBound, type QualifiedName, type TypeFieldAnnotation, Check, Effects,
-  FunctionExternal, ModuleExternal, Polymorphic, QualifiedName, Specific,
-  Wildcard,
+  type ArgumentValue, type EffectAnnotation, type EffectSet,
+  type ExternalAnnotation, type ParamBound, type QualifiedName,
+  type TypeFieldAnnotation, type TypeFieldEffect, Check, ConstructorRef, Effects,
+  FunctionExternal, FunctionRef, ModuleExternal, Polymorphic, QualifiedName,
+  Specific, TypeFieldEffect, Wildcard,
 }
 import simplifile
 import tom
@@ -26,7 +28,7 @@ pub type KnowledgeBase {
   KnowledgeBase(
     all_effects: Dict(QualifiedName, EffectSet),
     param_bounds: Dict(QualifiedName, List(ParamBound)),
-    type_fields: Dict(#(String, String), EffectSet),
+    type_fields: Dict(#(String, String), TypeFieldEffect),
     pure_modules: Set(String),
   )
 }
@@ -61,19 +63,19 @@ pub fn empty_knowledge_base() -> KnowledgeBase {
   )
 }
 
-/// Look up effects for a type's field.
+/// Look up a type field's resolved effect (with any polymorphic bounds/source).
+/// `Error(Nil)` when the field is not in the registry.
 pub fn lookup_type_field(
   knowledge_base: KnowledgeBase,
   type_name: String,
   field: String,
-) -> EffectLookup {
-  case dict.get(knowledge_base.type_fields, #(type_name, field)) {
-    Ok(effect_set) -> Known(effect_set)
-    Error(Nil) -> Unknown
-  }
+) -> Result(TypeFieldEffect, Nil) {
+  dict.get(knowledge_base.type_fields, #(type_name, field))
 }
 
-/// Merge type field annotations into a knowledge base.
+/// Merge hand-written type field annotations into a knowledge base. These carry
+/// no polymorphic bounds (a hand-written `type Foo.field : [...]` is a concrete
+/// budget), so they store empty bounds and no source.
 pub fn with_type_fields(
   knowledge_base: KnowledgeBase,
   type_fields: List(TypeFieldAnnotation),
@@ -86,11 +88,28 @@ pub fn with_type_fields(
         dict.insert(
           accumulator,
           #(type_field.type_name, type_field.field),
-          type_field.effects,
+          TypeFieldEffect(type_field.effects, [], None),
         )
       },
     )
   KnowledgeBase(..knowledge_base, type_fields: merged)
+}
+
+/// Merge inferred type fields (from constructor sites) into a knowledge base.
+/// Each entry is `#(#(type_name, field), TypeFieldEffect)` and may carry the
+/// wired function's bounds + source for variable substitution at field calls.
+/// Applied before `with_type_fields(spec)` so hand-written lines still win.
+pub fn with_inferred_type_fields(
+  knowledge_base: KnowledgeBase,
+  inferred: List(#(#(String, String), TypeFieldEffect)),
+) -> KnowledgeBase {
+  KnowledgeBase(
+    ..knowledge_base,
+    type_fields: dict.merge(
+      knowledge_base.type_fields,
+      dict.from_list(inferred),
+    ),
+  )
 }
 
 /// Merge external annotations into a knowledge base.
@@ -152,6 +171,26 @@ pub fn lookup_effects(
   case lookup(knowledge_base, name) {
     Known(effect_set) -> effect_set
     Unknown -> types.from_labels(["Unknown"])
+  }
+}
+
+/// The effect of a value wired into a constructor field (Stage C). A function
+/// reference resolves via the knowledge base; a nested constructor is pure;
+/// anything else (a local identifier, an inline expression) is `[Unknown]`,
+/// since we can't statically resolve it here.
+///
+/// A function reference may be effect-polymorphic, returning a `Polymorphic`
+/// set with free variables. Those variables are bound at the field-call site by
+/// `resolve_field_call` (using the bounds captured in the field's
+/// `TypeFieldEffect`), or collapse to `[Unknown]` if no argument resolves them.
+pub fn argument_value_effects(
+  knowledge_base: KnowledgeBase,
+  value: ArgumentValue,
+) -> EffectSet {
+  case value {
+    FunctionRef(name:) -> lookup_effects(knowledge_base, name)
+    ConstructorRef -> types.empty()
+    _ -> types.from_labels(["Unknown"])
   }
 }
 

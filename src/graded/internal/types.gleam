@@ -197,8 +197,10 @@ pub type LocalCall {
 }
 
 /// A field access call: object.label(args) where object is a local variable.
+/// `span` is the whole call's span (for diagnostics); `receiver_span` is the
+/// receiver variable's own span, used to look up its inferred type.
 pub type FieldCall {
-  FieldCall(object: String, label: String, span: Span)
+  FieldCall(object: String, label: String, span: Span, receiver_span: Span)
 }
 
 /// Effect annotation for a type's field (e.g., `type Handler.on_click : [Dom]`).
@@ -213,6 +215,20 @@ pub type TypeFieldAnnotation {
     type_name: String,
     field: String,
     effects: EffectSet,
+  )
+}
+
+/// A type field's resolved effect in the knowledge base. `effects` is the field
+/// call's effect set. When the field was inferred from a constructor site that
+/// wired an effect-polymorphic function, `bounds` and `source` carry that
+/// function's parameter bounds and qualified name, so a field call can bind the
+/// effect variables to its arguments (the same substitution resolved calls do).
+/// Both are empty/`None` for hand-written annotations and concrete field values.
+pub type TypeFieldEffect {
+  TypeFieldEffect(
+    effects: EffectSet,
+    bounds: List(ParamBound),
+    source: Option(QualifiedName),
   )
 }
 

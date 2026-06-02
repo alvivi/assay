@@ -1,8 +1,10 @@
 import generators
+import girard
+import girard/types as girard_types
 import glance
 import gleam/dict
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
@@ -12,8 +14,8 @@ import graded/internal/effects
 import graded/internal/signatures
 import graded/internal/types.{
   type EffectAnnotation, type EffectSet, Check, EffectAnnotation, Effects,
-  ParamBound, Polymorphic, QualifiedName, Specific, UntrackedEffectWarning,
-  Wildcard,
+  ParamBound, Polymorphic, QualifiedName, Specific, TypeFieldEffect,
+  UntrackedEffectWarning, Wildcard,
 }
 import qcheck
 
@@ -27,7 +29,13 @@ fn check_source(
 ) -> List(types.Violation) {
   let assert Ok(module) = glance.module(source)
   let #(violations, _warnings) =
-    checker.check(module, annotations, knowledge_base(), signatures.empty())
+    checker.check(
+      module,
+      annotations,
+      knowledge_base(),
+      signatures.empty(),
+      dict.new(),
+    )
   violations
 }
 
@@ -143,7 +151,15 @@ pub fn infer_pure_function_test() {
     "import gleam/list
 pub fn view(items) { list.map(items, fn(x) { x }) }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.kind |> should.equal(Effects)
   annotation.function |> should.equal("view")
@@ -155,7 +171,15 @@ pub fn infer_effectful_function_test() {
     "import gleam/io
 pub fn greet() { io.println(\"hi\") }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
 }
@@ -166,7 +190,15 @@ pub fn infer_only_public_functions_test() {
 pub fn view() { helper() }
 fn helper() { io.println(\"x\") }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.function |> should.equal("view")
 }
@@ -185,17 +217,85 @@ pub fn infer_uses_param_bounds_test() {
     ),
   ]
   let inferred =
-    checker.infer(module, knowledge_base(), existing_checks, signatures.empty())
+    checker.infer(
+      module,
+      knowledge_base(),
+      existing_checks,
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Stdout"])))
 }
 
 pub fn infer_without_bounds_gets_unknown_test() {
+  // Without girard's fn-typed info, an unannotated `f` isn't recognised as
+  // higher-order, so the call falls through to [Unknown].
   let source = "pub fn apply(f, x) { f(x) }"
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert [annotation] = inferred
   annotation.effects |> should.equal(Specific(set.from_list(["Unknown"])))
+}
+
+/// Build the fn-typed-param map girard supplies, the way build_type_index does:
+/// a parameter is fn-typed when its inferred type is itself a `Fn`.
+fn girard_fn_typed_for(
+  module: glance.Module,
+) -> dict.Dict(String, set.Set(String)) {
+  case girard.annotate_module(module, girard.default_options()) {
+    Ok(annotated) ->
+      list.fold(annotated.functions, dict.new(), fn(acc, entry) {
+        let #(name, scheme) = entry
+        case scheme.type_ {
+          girard_types.Fn(argument_types, _return) -> {
+            let assert Ok(definition) =
+              list.find(module.functions, fn(d) { d.definition.name == name })
+            let names =
+              list.zip(definition.definition.parameters, argument_types)
+              |> list.filter_map(fn(pair) {
+                case pair.1, { pair.0 }.name {
+                  girard_types.Fn(_, _), glance.Named(parameter_name) ->
+                    Ok(parameter_name)
+                  _, _ -> Error(Nil)
+                }
+              })
+              |> set.from_list()
+            dict.insert(acc, name, names)
+          }
+          _ -> acc
+        }
+      })
+    Error(_) -> dict.new()
+  }
+}
+
+pub fn infer_girard_detects_unannotated_fn_typed_param_test() {
+  // The enhancement: `f` has no `fn(...)` annotation, but girard infers it is a
+  // function, so `apply` gets a polymorphic signature instead of [Unknown].
+  let source = "pub fn apply(f, x) { f(x) }"
+  let assert Ok(module) = glance.module(source)
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      girard_fn_typed_for(module),
+    )
+  let assert [annotation] = inferred
+  annotation.effects
+  |> should.equal(Polymorphic(set.new(), set.from_list(["f"])))
 }
 
 // Higher-order / parameter bound tests
@@ -274,7 +374,7 @@ fn check_source_with_type_fields(
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_type_fields(knowledge_base(), type_fields)
   let #(violations, _warnings) =
-    checker.check(module, annotations, kb, signatures.empty())
+    checker.check(module, annotations, kb, signatures.empty(), dict.new())
   violations
 }
 
@@ -293,6 +393,131 @@ pub fn field_call_typed_with_registry_test() {
     EffectAnnotation(Check, "view", [], Specific(set.from_list(["Dom"])))
   check_source_with_type_fields(source, [annotation], type_fields)
   |> should.equal([])
+}
+
+// Stage A: type-directed receiver resolution via girard.
+//
+// Same as `check_source_with_type_fields`, but threads girard's real inferred
+// types so the receiver's nominal type is known even when it isn't a directly
+// annotated parameter.
+fn check_source_with_girard(
+  source: String,
+  annotations: List(EffectAnnotation),
+  type_fields: List(types.TypeFieldAnnotation),
+) -> List(types.Violation) {
+  let assert Ok(module) = glance.module(source)
+  let module_types = case
+    girard.annotate_module(module, girard.default_options())
+  {
+    Ok(annotated) ->
+      list.fold(annotated.expressions, dict.new(), fn(acc, annotation) {
+        dict.insert(
+          acc,
+          #(annotation.span.start, annotation.span.end),
+          annotation.type_,
+        )
+      })
+    Error(_) -> dict.new()
+  }
+  let kb = effects.with_type_fields(knowledge_base(), type_fields)
+  let #(violations, _warnings) =
+    checker.check(module, annotations, kb, signatures.empty(), module_types)
+  violations
+}
+
+// The canonical 3b gap: the receiver is bound from a function call, so graded's
+// syntax-level path sees it as opaque. girard types it as `Validator`, so the
+// `type Validator.to_error` annotation resolves the field call.
+const opaque_receiver_source = "
+import gleam/io
+
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+
+fn make() -> Validator {
+  Validator(to_error: io.println)
+}
+
+pub fn run(msg: String) -> Nil {
+  let v = make()
+  v.to_error(msg)
+}
+"
+
+fn validator_to_error_stdout() -> List(types.TypeFieldAnnotation) {
+  [
+    types.TypeFieldAnnotation(
+      module: None,
+      type_name: "Validator",
+      field: "to_error",
+      effects: Specific(set.from_list(["Stdout"])),
+    ),
+  ]
+}
+
+pub fn field_call_opaque_receiver_resolves_via_girard_test() {
+  // With girard's type + the type annotation, the [Stdout] budget passes.
+  let annotation =
+    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+  check_source_with_girard(
+    opaque_receiver_source,
+    [annotation],
+    validator_to_error_stdout(),
+  )
+  |> should.equal([])
+}
+
+pub fn field_call_opaque_receiver_violates_pure_test() {
+  // Dual: against a [] budget the recovered [Stdout] surfaces as a violation,
+  // proving the field call actually resolved (vs. silently inferring []).
+  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let violations =
+    check_source_with_girard(
+      opaque_receiver_source,
+      [annotation],
+      validator_to_error_stdout(),
+    )
+  let assert [violation] = violations
+  violation.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn field_call_aliased_receiver_resolves_via_girard_test() {
+  // Receiver reached through an alias chain (`let w = v`) — both bindings are
+  // opaque to the syntax-level path, but girard types `w` as Validator.
+  let source =
+    "
+import gleam/io
+
+pub type Validator {
+  Validator(to_error: fn(String) -> Nil)
+}
+
+fn make() -> Validator {
+  Validator(to_error: io.println)
+}
+
+pub fn run(msg: String) -> Nil {
+  let v = make()
+  let w = v
+  w.to_error(msg)
+}
+"
+  let annotation =
+    EffectAnnotation(Check, "run", [], Specific(set.from_list(["Stdout"])))
+  check_source_with_girard(source, [annotation], validator_to_error_stdout())
+  |> should.equal([])
+}
+
+pub fn field_call_girard_without_annotation_still_unknown_test() {
+  // girard types the receiver, but no `type Validator.to_error` annotation
+  // exists, so the effect is still [Unknown] — documents the A/C boundary:
+  // Stage A needs the annotation for the effect; Stage C removes that need.
+  let annotation = EffectAnnotation(Check, "run", [], Specific(set.new()))
+  let violations =
+    check_source_with_girard(opaque_receiver_source, [annotation], [])
+  let assert [violation] = violations
+  violation.actual |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
 // Field effects exceed declared budget → violation
@@ -340,7 +565,7 @@ fn check_source_with_externals(
   let assert Ok(module) = glance.module(source)
   let kb = effects.with_externals(knowledge_base(), externals)
   let #(violations, _warnings) =
-    checker.check(module, annotations, kb, signatures.empty())
+    checker.check(module, annotations, kb, signatures.empty(), dict.new())
   violations
 }
 
@@ -420,7 +645,13 @@ fn check_warnings(
 ) -> List(types.Warning) {
   let assert Ok(module) = glance.module(source)
   let #(_violations, warnings) =
-    checker.check(module, annotations, knowledge_base(), signatures.empty())
+    checker.check(
+      module,
+      annotations,
+      knowledge_base(),
+      signatures.empty(),
+      dict.new(),
+    )
   warnings
 }
 
@@ -576,7 +807,7 @@ pub fn check_no_false_positives_test() {
       let declared = actual_effects(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], declared)
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty())
+        checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
     }
   }
@@ -591,7 +822,7 @@ pub fn check_wildcard_never_violates_test() {
       let kb = build_kb(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], Wildcard)
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty())
+        checker.check(module, [ann], kb, signatures.empty(), dict.new())
       violations |> should.equal([])
     }
   }
@@ -609,7 +840,7 @@ pub fn check_empty_budget_detects_effects_test() {
           let kb = build_kb(calls)
           let ann = EffectAnnotation(Check, "test_fn", [], types.empty())
           let #(violations, _) =
-            checker.check(module, [ann], kb, signatures.empty())
+            checker.check(module, [ann], kb, signatures.empty(), dict.new())
           { violations != [] } |> should.be_true()
         }
       }
@@ -629,7 +860,7 @@ pub fn check_violations_iff_not_subset_test() {
       let kb = build_kb(calls)
       let ann = EffectAnnotation(Check, "test_fn", [], declared)
       let #(violations, _) =
-        checker.check(module, [ann], kb, signatures.empty())
+        checker.check(module, [ann], kb, signatures.empty(), dict.new())
       let has_violations = violations != []
       let actual = actual_effects(calls)
       let not_subset = !types.is_subset(actual, declared)
@@ -645,7 +876,15 @@ pub fn infer_matches_actual_effects_test() {
     Error(Nil) -> Nil
     Ok(module) -> {
       let kb = build_kb(calls)
-      let inferred = checker.infer(module, kb, [], signatures.empty())
+      let inferred =
+        checker.infer(
+          module,
+          kb,
+          [],
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let assert [ann] = inferred
       ann.function |> should.equal("test_fn")
       ann.effects |> should.equal(actual_effects(calls))
@@ -709,7 +948,14 @@ pub fn infer_terminates_with_cycles_test() {
     Error(_) -> Nil
     Ok(module) -> {
       let inferred =
-        checker.infer(module, bare_knowledge_base(), [], signatures.empty())
+        checker.infer(
+          module,
+          bare_knowledge_base(),
+          [],
+          signatures.empty(),
+          dict.new(),
+          dict.new(),
+        )
       let assert [ann] = inferred
       ann.function |> should.equal("a")
     }
@@ -724,7 +970,13 @@ pub fn check_terminates_with_cycles_test() {
     Ok(module) -> {
       let ann = EffectAnnotation(Check, "a", [], types.empty())
       let #(violations, _) =
-        checker.check(module, [ann], bare_knowledge_base(), signatures.empty())
+        checker.check(
+          module,
+          [ann],
+          bare_knowledge_base(),
+          signatures.empty(),
+          dict.new(),
+        )
       violations |> should.equal([])
     }
   }
@@ -735,7 +987,14 @@ pub fn check_terminates_with_cycles_test() {
 fn infer_single(source: String) -> EffectAnnotation {
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, knowledge_base(), [], signatures.empty())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann
 }
 
@@ -809,7 +1068,14 @@ pub fn apply(f: fn(Int) -> Int, x: Int) -> Int {
       Specific(set.from_list(["Stdout"])),
     )
   let assert [ann] =
-    checker.infer(module, knowledge_base(), [existing], signatures.empty())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [existing],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.from_list(["Stdout"])))
   ann.params |> should.equal([])
 }
@@ -867,6 +1133,7 @@ pub fn new() {
       [EffectAnnotation(Check, "new", [], Specific(set.new()))],
       polymorphic_kb(),
       signatures.empty(),
+      dict.new(),
     )
   violations |> should.equal([])
 }
@@ -891,6 +1158,7 @@ pub fn new() {
       ],
       polymorphic_kb(),
       signatures.empty(),
+      dict.new(),
     )
   violations |> should.equal([])
 }
@@ -912,6 +1180,7 @@ pub fn new() {
       [EffectAnnotation(Check, "new", [], Specific(set.new()))],
       polymorphic_kb(),
       signatures.empty(),
+      dict.new(),
     )
   list.length(violations) |> should.equal(1)
 }
@@ -928,7 +1197,14 @@ pub fn new() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, polymorphic_kb(), [], signatures.empty())
+    checker.infer(
+      module,
+      polymorphic_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.new()))
 }
 
@@ -947,7 +1223,14 @@ pub fn new() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, polymorphic_kb(), [], signatures.empty())
+    checker.infer(
+      module,
+      polymorphic_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.from_list(["Unknown"])))
 }
 
@@ -991,7 +1274,15 @@ pub fn outer() -> MyError {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let inferred = checker.infer(module, knowledge_base(), [], signatures.empty())
+  let inferred =
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   let assert Ok(outer) = list.find(inferred, fn(a) { a.function == "outer" })
   outer.effects |> should.equal(Specific(set.new()))
 }
@@ -1009,7 +1300,14 @@ pub fn run() {
 "
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, two_callback_kb(), [], signatures.empty())
+    checker.infer(
+      module,
+      two_callback_kb(),
+      [],
+      signatures.empty(),
+      dict.new(),
+      dict.new(),
+    )
   ann.effects |> should.equal(Specific(set.from_list(["Http", "Stdout"])))
 }
 
@@ -1025,7 +1323,14 @@ fn list_registry() -> signatures.SignatureRegistry {
 fn infer_single_with_list(source: String) -> types.EffectAnnotation {
   let assert Ok(module) = glance.module(source)
   let assert [ann] =
-    checker.infer(module, knowledge_base(), [], list_registry())
+    checker.infer(
+      module,
+      knowledge_base(),
+      [],
+      list_registry(),
+      dict.new(),
+      dict.new(),
+    )
   ann
 }
 
@@ -1087,7 +1392,13 @@ pub fn run(x: Int) {
 "
   let assert Ok(module) = glance.module(source)
   let #(violations, _) =
-    checker.check(module, [EffectAnnotation(Check, "run", [], budget)], kb, reg)
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "run", [], budget)],
+      kb,
+      reg,
+      dict.new(),
+    )
   violations
 }
 
@@ -1196,8 +1507,78 @@ pub fn run(h: fn(Int) -> Int, x: Int) -> Int {
 }
 "
   let assert Ok(module) = glance.module(source)
-  let assert [ann] = checker.infer(module, kb, [], reg)
+  let assert [ann] = checker.infer(module, kb, [], reg, dict.new(), dict.new())
   ann.function |> should.equal("run")
   ann.effects
   |> should.equal(Polymorphic(set.new(), set.from_list(["h"])))
+}
+
+// ──── Polymorphic field-call substitution (review issue #8) ────
+
+/// A KB whose `Task.go` field is wired to a polymorphic function `helper.run_it`
+/// (effect variable `action`), plus a registry giving run_it's parameter
+/// positions so the field call's arguments bind that variable.
+fn polymorphic_field_kb_and_registry() -> #(
+  effects.KnowledgeBase,
+  signatures.SignatureRegistry,
+) {
+  let action_var = Polymorphic(set.new(), set.from_list(["action"]))
+  let kb =
+    effects.with_inferred_type_fields(knowledge_base(), [
+      #(
+        #("Task", "go"),
+        TypeFieldEffect(
+          effects: action_var,
+          bounds: [ParamBound("action", action_var)],
+          source: Some(QualifiedName("helper", "run_it")),
+        ),
+      ),
+    ])
+  let run_it_src =
+    "pub fn run_it(action: fn(String) -> Nil, msg: String) -> Nil { action(msg) }"
+  let assert Ok(run_it_module) = glance.module(run_it_src)
+  let registry = signatures.from_glance_module("helper", run_it_module)
+  #(kb, registry)
+}
+
+fn check_field_call(arg: String) -> List(types.Violation) {
+  let #(kb, registry) = polymorphic_field_kb_and_registry()
+  let source = "
+import gleam/io
+pub fn main(t: Task, msg: String) {
+  t.go(" <> arg <> ", msg)
+}
+"
+  let assert Ok(module) = glance.module(source)
+  let #(violations, _warnings) =
+    checker.check(
+      module,
+      [EffectAnnotation(Check, "main", [], Specific(set.new()))],
+      kb,
+      registry,
+      dict.new(),
+    )
+  violations
+}
+
+pub fn field_call_binds_effectful_argument_test() {
+  // t.go(io.println, msg): the field's `action` variable binds to io.println's
+  // [Stdout], so the [] budget fails with the precise [Stdout] — not a leaked
+  // free variable.
+  let assert [v, ..] = check_field_call("io.println")
+  v.function |> should.equal("main")
+  v.actual |> should.equal(Specific(set.from_list(["Stdout"])))
+}
+
+pub fn field_call_binds_pure_argument_test() {
+  // A constructor argument is pure, so `action` binds to [] and the field call
+  // has no effect — no violation against the [] budget.
+  check_field_call("Wrapper") |> should.equal([])
+}
+
+pub fn field_call_unbound_argument_concretizes_to_unknown_test() {
+  // An inline closure is OtherExpression — `action` can't bind, so the leftover
+  // variable collapses to [Unknown] rather than surfacing free.
+  let assert [v, ..] = check_field_call("fn(s) { s }")
+  v.actual |> should.equal(Specific(set.from_list(["Unknown"])))
 }
